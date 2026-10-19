@@ -5,6 +5,8 @@ import { storeMiddleware } from './server/store.js'
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  // GitHub Pages 为子路径部署（/ustc-vegetation-map/），本地开发与共享服务保持根路径
+  base: process.env.VITE_BASE_PATH || '/',
   plugins: [
     vue(),
     {

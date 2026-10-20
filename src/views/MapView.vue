@@ -32,10 +32,10 @@
         </select>
       </label>
 
-      <label class="f grow">
+      <div class="f grow">
         <span>搜索</span>
-        <input v-model.trim="keyword" type="text" placeholder="输入中文名 / 学名 / 别名 / 关键词" />
-      </label>
+        <SearchSuggest v-model="keyword" @select="onSelectSpecies" />
+      </div>
 
       <label class="check">
         <input v-model="showSubmissions" type="checkbox" />
@@ -64,13 +64,19 @@
       ><template v-else>天地图图层未启用，配置 VITE_TIANDITU_TK 后自动出现在图层控件中；</template>
       在线瓦片原生最高 <b>18 级</b>，地图同样限制在 18 级，避免继续放大的拉伸模糊。
       放大到 <b>18 级</b>起显示物种名称。地图仅显示<b>已记录</b>（有分布点）的物种，其余为待核实的候选清单。
+      相近点位会自动聚合为数字标记，点击即可放大展开；也可以去
+      <router-link class="hint-link" to="/season">季节专题</router-link> 按月份查看花期。
     </p>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import L from 'leaflet'
+import 'leaflet.markercluster'
+import 'leaflet.markercluster/dist/MarkerCluster.css'
+import SearchSuggest from '@/components/SearchSuggest.vue'
 import {
   campus,
   speciesList,
@@ -84,16 +90,22 @@ import {
 import { loadSubmissions } from '@/utils/storage'
 import { gcj02ToWgs84 } from '@/utils/coord'
 
+const route = useRoute()
+const router = useRouter()
+
 const mapEl = ref(null)
 let map = null
 let speciesLayer = null
 let submissionLayer = null
+// 供搜索联想定位使用：`物种id:点位序号` → marker
+const speciesMarkers = new Map()
 
 const families = allFamilies()
 const months = allMonths()
 
 const family = ref('')
-const month = ref('')
+const queryMonth = Number(route.query.month)
+const month = ref(months.includes(queryMonth) ? queryMonth : '')
 const keyword = ref('')
 const showSubmissions = ref(true)
 const submissions = ref(loadSubmissions())
@@ -124,7 +136,7 @@ const wgs84Layers = new WeakSet()
 const LABEL_ZOOM = 18
 
 const visibleSpecies = computed(() => {
-  const kw = keyword.value.toLowerCase()
+  const kw = keyword.value.trim().toLowerCase()
   return speciesList.filter((s) => {
     if (family.value && s.family !== family.value) return false
     if (month.value && !bloomsIn(s, month.value)) return false
@@ -181,6 +193,18 @@ function dotIcon(color) {
   })
 }
 
+/** 聚合标记：数字越大圆圈越大，配色沿用站点主色 */
+function clusterIcon(cluster) {
+  const count = cluster.getChildCount()
+  const size = count < 10 ? 34 : count < 30 ? 40 : 46
+  const tone = count < 10 ? 'sm' : count < 30 ? 'md' : 'lg'
+  return L.divIcon({
+    className: `marker-cluster marker-cluster-${tone}`,
+    html: `<span>${count}</span>`,
+    iconSize: L.point(size, size)
+  })
+}
+
 function popupHtml(s, p) {
   return `
     <div>
@@ -224,6 +248,7 @@ function renderMarkers() {
   if (!map) return
   speciesLayer.clearLayers()
   submissionLayer.clearLayers()
+  speciesMarkers.clear()
 
   for (const p of visiblePoints.value) {
     const marker = L.marker(toDisplayLatLng(p.lat, p.lng), {
@@ -239,7 +264,8 @@ function renderMarkers() {
       className: 'marker-label',
       opacity: 1
     })
-    marker.addTo(speciesLayer)
+    speciesMarkers.set(`${p.species.id}:${p.pointIndex}`, marker)
+    speciesLayer.addLayer(marker)
   }
 
   if (showSubmissions.value) {
@@ -255,6 +281,25 @@ function renderMarkers() {
   }
 
   updateLabelVisibility()
+}
+
+/** 搜索联想选中：清掉会互相排斥的筛选，并定位到该物种的第一个分布点 */
+function onSelectSpecies(species) {
+  family.value = ''
+  month.value = ''
+  showSubmissions.value = true
+
+  if (!(species.points || []).length) {
+    router.push(`/species/${species.id}`)
+    return
+  }
+
+  nextTick(() => {
+    const marker = speciesMarkers.get(`${species.id}:0`)
+    if (!marker) return
+    // 聚合状态下先展开到该标记，再打开弹窗
+    speciesLayer.zoomToShowLayer(marker, () => marker.openPopup())
+  })
 }
 
 function reset() {
@@ -366,7 +411,20 @@ onMounted(() => {
   L.control.layers(baseLayers, {}, { position: 'topright' }).addTo(map)
   L.control.scale({ imperial: false }).addTo(map)
 
-  speciesLayer = L.layerGroup().addTo(map)
+  speciesLayer = L.markerClusterGroup({
+    showCoverageOnHover: false,
+    // 地图只有 17–18 两级，聚合点直接跳到最大缩放展开，不做 spiderfy
+    spiderfyOnMaxZoom: false,
+    zoomToBoundsOnClick: false,
+    maxClusterRadius: 55,
+    // 18 级为地图最大缩放，此级别完全展开，便于查看单个点位与名称
+    disableClusteringAtZoom: LABEL_ZOOM,
+    iconCreateFunction: clusterIcon
+  })
+  speciesLayer.on('clusterclick', (e) => {
+    map.setView(e.layer.getLatLng(), map.getMaxZoom(), { animate: true })
+  })
+  speciesLayer.addTo(map)
   submissionLayer = L.layerGroup().addTo(map)
 
   renderMarkers()
@@ -579,6 +637,17 @@ onBeforeUnmount(() => {
   color: var(--ink-soft);
   font-size: 12.5px;
   line-height: 1.8;
+}
+
+.hint-link {
+  color: var(--green-700);
+  font-weight: 600;
+  border-bottom: 1px dashed rgba(31, 107, 74, 0.4);
+}
+
+.hint-link:hover {
+  color: var(--green-600);
+  border-bottom-style: solid;
 }
 
 /* 18 级起显示的物种名称标签（Leaflet tooltip 由 JS 生成，需 :deep 穿透） */

@@ -58,6 +58,45 @@ export function bloomsIn(species, month) {
   return (species.bloomMonths || []).includes(Number(month))
 }
 
+/**
+ * 从 fruitText（如「8–11 月」「次年 3–4 月」）解析果期月份。
+ * 「次年成熟」「少见结果」等无具体月份的文案返回空数组。
+ */
+export function fruitMonthsOf(species) {
+  const text = species?.fruitText || ''
+  if (!text) return []
+  const months = new Set()
+  const re = /(\d{1,2})\s*(?:[–—\-~～至]\s*(\d{1,2}))?\s*月/g
+  let m
+  while ((m = re.exec(text))) {
+    const start = Number(m[1])
+    const end = m[2] ? Number(m[2]) : start
+    if (start < 1 || start > 12) continue
+    for (let i = start; i <= Math.min(end, 12); i++) months.add(i)
+  }
+  return [...months].sort((a, b) => a - b)
+}
+
+/** 判断某物种是否在指定月份结果 */
+export function fruitsIn(species, month) {
+  if (!month) return true
+  return fruitMonthsOf(species).includes(Number(month))
+}
+
+/** 四季划分（按阳历月份） */
+export const SEASONS = [
+  { key: 'spring', label: '春', months: [3, 4, 5], note: '新芽与花期最集中的季节，校园里几乎每周都有新的花开。' },
+  { key: 'summer', label: '夏', months: [6, 7, 8], note: '绿荫最浓的时节，水生植物与夏季观花植物进入盛期。' },
+  { key: 'autumn', label: '秋', months: [9, 10, 11], note: '果实成熟、秋叶变色，是观察果期与叶色变化的好时候。' },
+  { key: 'winter', label: '冬', months: [12, 1, 2], note: '常绿树与冬花植物构成校园的主要色彩，适合观察树形与叶。' }
+]
+
+/** 由月份取季节 */
+export function seasonOf(month) {
+  const m = Number(month)
+  return SEASONS.find((s) => s.months.includes(m)) || SEASONS[0]
+}
+
 /** 是否有校园分布点位（已记录 / 待核实 的区分依据） */
 export function hasPoints(species) {
   return (species.points || []).length > 0

@@ -7,7 +7,11 @@ import {
   dataLevelOf,
   pointAccuracyText,
   recordedCount,
-  searchText
+  searchText,
+  fruitMonthsOf,
+  fruitsIn,
+  seasonOf,
+  SEASONS
 } from '../src/utils/species.js'
 
 describe('物种数据与筛选', () => {
@@ -81,5 +85,25 @@ describe('物种数据与筛选', () => {
   it('点位精度文案：默认提示示例坐标', () => {
     expect(pointAccuracyText({ lat: 31.8, lng: 117.2 })).toContain('示例坐标')
     expect(pointAccuracyText({ source: '实地调查', coordAccuracy: '±3 m' })).toBe('±3 m')
+  })
+
+  it('果期解析：区间展开，无具体月份的文案返回空数组', () => {
+    expect(fruitMonthsOf({ fruitText: '8–11 月' })).toEqual([8, 9, 10, 11])
+    expect(fruitMonthsOf({ fruitText: '次年 3–4 月' })).toEqual([3, 4])
+    expect(fruitMonthsOf({ fruitText: '10 月' })).toEqual([10])
+    expect(fruitMonthsOf({ fruitText: '次年成熟' })).toEqual([])
+    expect(fruitMonthsOf({ fruitText: '少见结果' })).toEqual([])
+    expect(fruitsIn({ fruitText: '8–11 月' }, 9)).toBe(true)
+    expect(fruitsIn({ fruitText: '8–11 月' }, 5)).toBe(false)
+    expect(fruitsIn({ fruitText: '8–11 月' }, '')).toBe(true)
+  })
+
+  it('季节划分覆盖 12 个月', () => {
+    expect(SEASONS).toHaveLength(4)
+    expect(seasonOf(4).key).toBe('spring')
+    expect(seasonOf(7).key).toBe('summer')
+    expect(seasonOf(10).key).toBe('autumn')
+    expect(seasonOf(1).key).toBe('winter')
+    expect(seasonOf(12).key).toBe('winter')
   })
 })

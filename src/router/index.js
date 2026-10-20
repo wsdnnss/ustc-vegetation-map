@@ -15,6 +15,12 @@ const routes = [
     meta: { title: '物种库' }
   },
   {
+    path: '/season',
+    name: 'season',
+    component: () => import('@/views/SeasonView.vue'),
+    meta: { title: '季节专题' }
+  },
+  {
     path: '/community',
     name: 'community',
     component: () => import('@/views/CommunityView.vue'),

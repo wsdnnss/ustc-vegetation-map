@@ -16,10 +16,10 @@
     </div>
 
     <div class="toolbar card glass">
-      <label class="f grow">
+      <div class="f grow">
         <span>搜索</span>
-        <input v-model.trim="keyword" type="text" placeholder="输入中文名 / 学名 / 别名 / 关键词" />
-      </label>
+        <SearchSuggest v-model="keyword" @select="openSpecies" />
+      </div>
       <label class="f">
         <span>科</span>
         <select v-model="family">
@@ -84,7 +84,9 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import SpeciesCard from '@/components/SpeciesCard.vue'
+import SearchSuggest from '@/components/SearchSuggest.vue'
 import {
   speciesList,
   allFamilies,
@@ -101,6 +103,7 @@ const families = allFamilies()
 const months = allMonths()
 const categories = allCategories()
 const recorded = recordedCount()
+const router = useRouter()
 
 const keyword = ref('')
 const family = ref('')
@@ -109,7 +112,7 @@ const category = ref('')
 const status = ref('')
 
 const filtered = computed(() => {
-  const kw = keyword.value.toLowerCase()
+  const kw = keyword.value.trim().toLowerCase()
   const list = speciesList.filter((s) => {
     if (family.value && s.family !== family.value) return false
     if (month.value && !bloomsIn(s, month.value)) return false
@@ -128,6 +131,11 @@ function reset() {
   month.value = ''
   category.value = ''
   status.value = ''
+}
+
+/** 联想选中后直接进入物种详情，避免再点一次卡片 */
+function openSpecies(species) {
+  router.push(`/species/${species.id}`)
 }
 </script>
 

@@ -55,6 +55,15 @@ echo.
 powershell -NoProfile -Command "Get-NetIPAddress -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.AddressState -eq 'Preferred' -and $_.IPAddress -ne '::1' -and $_.IPAddress -notlike 'fe80*' -and $_.IPAddress -notlike 'fd*' -and $_.IPAddress -notlike '2001:0:*' } | ForEach-Object { '        http://[' + $_.IPAddress + ']:%PORT%/        [' + $_.InterfaceAlias + ']' }"
 echo.
 echo        本机预览:  http://[::1]:%PORT%/
+echo.
+
+rem ---------- 访问口令（公网 IPv6 可直连，默认开启） ----------
+if not defined VEG_ACCESS_TOKEN (
+  for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "[guid]::NewGuid().ToString('N').Substring(0,10)"`) do set "VEG_ACCESS_TOKEN=%%T"
+)
+echo        访问口令:  %VEG_ACCESS_TOKEN%
+echo        （浏览器首次打开会弹窗，用户名任意，密码填上面的口令）
+echo.
 echo ============================================================
 echo    服务已启动。停止请按 Ctrl+C 或直接关闭本窗口。
 echo ============================================================

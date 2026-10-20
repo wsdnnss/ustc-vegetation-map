@@ -13,6 +13,7 @@
       />
       <span class="habit">{{ species.habit }}</span>
       <span v-if="species.status === '待核实'" class="status-badge">待核实</span>
+      <span v-else-if="level.key === 'example'" class="coord-badge">示例坐标</span>
     </div>
     <div class="body">
       <div class="name-row">
@@ -32,7 +33,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { speciesImage, aliasesOf } from '@/utils/species'
+import { speciesImage, aliasesOf, dataLevelOf } from '@/utils/species'
 
 const props = defineProps({
   species: { type: Object, required: true }
@@ -40,6 +41,7 @@ const props = defineProps({
 
 const img = ref(speciesImage(props.species))
 const aliases = computed(() => aliasesOf(props.species))
+const level = computed(() => dataLevelOf(props.species))
 const broken = ref(false)
 const loaded = ref(false)
 const imgEl = ref(null)
@@ -138,6 +140,20 @@ function onError(e) {
   font-size: 11.5px;
   font-weight: 600;
   box-shadow: 0 2px 8px -2px rgba(90, 60, 10, 0.35);
+}
+
+.coord-badge {
+  position: absolute;
+  z-index: 2;
+  right: 14px;
+  top: 14px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #5f6f66;
+  font-size: 11.5px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px -2px rgba(30, 50, 40, 0.28);
 }
 
 .body {

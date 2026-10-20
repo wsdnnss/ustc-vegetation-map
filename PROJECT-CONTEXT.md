@@ -8,7 +8,7 @@
 
 ## 1. 项目一句话与硬约束
 
-**中科大本部植被分布可视化平台** —— 面向校园植被科普的**纯前端网页**。
+**中科大本部植被分布可视化平台** —— 面向校园植被科普的**网页**（Vue 前端 + 本地 Node 数据服务，无外部数据库）。
 物种库 **229 种**（已记录 20 / 待核实 209），详情页采用**图鉴体例**：别名 / 识别特征 / 学名来源 / 分布位置。
 
 **参考书目**：《中国科学技术大学校园植物图鉴》（钱栎屾、邱燕宁 著，指导：沈显生，中国科学技术大学出版社）——
@@ -20,7 +20,7 @@
 |---|---|
 | 性质 | **课堂作业，不公开使用** |
 | 范围 | 地图**仅限科大中区** |
-| 简化原则 | 不做后端 / 数据库 / 备案 / 登录 / 合规；天地图为**可选** Key（不配置时自动用高德） |
+| 简化原则 | 不做外部后端 / 数据库 / 备案 / 登录 / 合规；本地 Node 数据服务只负责云盘 JSON 与照片读写；天地图为**可选** Key（不配置时自动用高德） |
 | 交付 | 可本地运行的网页 + 示例数据 + 使用指南 |
 | 位置 | 所有文件放在 **E 盘**：`E:\ustc-vegetation-map` |
 
@@ -50,9 +50,15 @@
 
 ```
 E:\ustc-vegetation-map\
-├─ start-share.bat              一键共享脚本（构建 + 选端口 + 打印 IPv6 地址 + 起服务）
-├─ server.mjs                   构建版静态服务 + /api/store 数据接口（共享时用）
-├─ server/store.js              云盘 JSON 文件读写（Vite 中间件与 server.mjs 共用）
+├─ start-share.bat              一键共享脚本（构建 + 选端口 + 打印 IPv6 地址 + 随机访问口令 + 起服务）
+├─ backup-data.bat              备份云盘数据目录到 backups/
+├─ reset-demo.bat               重置演示数据（先自动备份）
+├─ server.mjs                   构建版静态服务 + 数据接口 + 可选 HTTP Basic 口令
+├─ server/store.js              云盘 JSON 按条读写（Vite 中间件与 server.mjs 共用）
+├─ scripts/validate-data.mjs    物种数据校验
+├─ scripts/merge-exports.mjs    合并多人导出的投稿 JSON
+├─ tests/                       Vitest 单元测试（coord / table / species）
+├─ vitest.config.js
 ├─ README.md                    面向使用者的使用指南
 ├─ PROJECT-CONTEXT.md           本文档（面向 AI 的交接说明）
 ├─ index.html
@@ -66,23 +72,23 @@ E:\ustc-vegetation-map\
    ├─ router/index.js                      6 条路由 + 兜底重定向 + 动态标题
    ├─ components/
    │  ├─ AppHeader.vue                     顶部导航（高亮当前路由）
-   │  └─ SpeciesCard.vue                   物种卡片（含「待核实」徽章）
+   │  └─ SpeciesCard.vue                   物种卡片（待核实 / 示例坐标徽章）
    ├─ views/
    │  ├─ MapView.vue                       分布地图（主页面）
-   │  ├─ SpeciesListView.vue               物种库（120 种 + 5 个筛选器）
-   │  ├─ SpeciesDetailView.vue             物种详情（含迷你地图 / 无点位提示）
+   │  ├─ SpeciesListView.vue               物种库（229 种 + 5 个筛选器）
+   │  ├─ SpeciesDetailView.vue             物种详情（含数据分级提示 / 迷你地图）
    │  ├─ UploadView.vue                    上传投稿（照片 + 选点 + 导出/导入 JSON）
-   │  ├─ BatchImportView.vue               批量导入（表格 + 批量照片）
+   │  ├─ BatchImportView.vue               批量导入（CSV / Excel + 批量照片）
    │  └─ AboutView.vue                     关于与使用说明
    ├─ data/species.json                    ★ 全站数据源
    └─ utils/
-      ├─ species.js                        数据访问 + 类别/状态/花期工具
+      ├─ species.js                        数据访问 + 类别/状态/花期/数据分级
       ├─ coord.js                          GCJ-02 ↔ WGS-84 坐标转换（天地图用）
-      ├─ storage.js                        投稿读写（localStorage 缓存 + 云盘落盘）
-      ├─ community.js                      社区帖子读写（同上）
-      ├─ diskStore.js                      启动时从云盘读取、变更后写入云盘
+      ├─ storage.js                        投稿读写（按条调用数据服务）
+      ├─ community.js                      社区帖子读写
+      ├─ diskStore.js                      数据服务客户端 / 缓存 / 历史数据迁移
       ├─ image.js                          图片压缩 + 占位图 URL
-      └─ table.js                          表格解析（CSV/粘贴）+ 模板下载
+      └─ table.js                          表格解析（CSV / xlsx）+ 模板下载
 ```
 
 ---
@@ -134,15 +140,22 @@ E:\ustc-vegetation-map\
 - **照片文件**：`E:\科大云盘\云盘文件\科大植物地图\图片\photo-<时间戳>-<随机>.<jpg|png|webp>`
   - `POST /api/images`（body `{ dataUrl }`）保存照片并返回 `/api/images/<文件名>`
   - `GET /api/images/<文件名>` 读取、`DELETE /api/images/<文件名>` 删除
-  - 帖子 `images[]` 与投稿 `image` 字段只保存 URL；删除帖子/投稿/清空投稿时同步删除照片文件
+  - 帖子 `images[]` 与投稿 `image` 字段只保存 URL；删除帖子/投稿/清空投稿时服务端同步删除照片文件
   - 未启动本地服务或上传失败时回退为 base64 data URL，功能不中断
-- **读写路径**
-  - 启动时 `src/utils/diskStore.js` 先 `GET /api/store` 读取云盘文件，写入 localStorage 作为缓存；云盘文件里没有的旧数据会自动 `PUT` 迁移上去
-  - 每次发帖/删帖/投稿/改昵称：先写 localStorage（失败不影响），再异步 `PUT /api/store` 落盘
-  - 未启动本地服务（如直接打开 `dist/index.html`）时自动回退纯 localStorage
-- **接口提供方**
-  - `pnpm dev`：`vite.config.js` 注册的中间件
-  - `start-share.bat`：`server.mjs`（静态托管 `dist` + 同一数据/图片接口）
+- **按条读写（已替换整表覆盖）**
+  - `GET /api/store`：初始化读取全部数据
+  - `POST /api/posts`、`POST /api/posts/batch`、`DELETE /api/posts/:id`
+  - `POST /api/submissions`、`POST /api/submissions/batch`、`DELETE /api/submissions/:id`、`DELETE /api/submissions`
+  - `PUT /api/author`
+  - 所有写入在进程内串行化（先读最新文件再追加），多人同时发帖不会互相覆盖
+  - JSON 解析失败时拒绝写入，避免把损坏文件覆盖成空数据
+- **读取路径**
+  - 启动时 `src/utils/diskStore.js` 先 `GET /api/store` 读取云盘文件，写入 localStorage 作为缓存；云盘缺失的键会把浏览器旧数据批量迁移上去
+  - 每次发帖/删帖/投稿/改昵称：调用对应按条接口，成功后用服务端返回的列表刷新缓存
+  - 未启动本地服务（如直接打开 `dist/index.html` 或 GitHub Pages）时自动回退纯 localStorage
+- **访问口令**
+  - `server.mjs` 读取 `VEG_ACCESS_TOKEN`，设置后整站启用 HTTP Basic（用户名任意、密码为口令）
+  - `start-share.bat` 默认生成随机口令并打印；`pnpm dev` 不启用口令
 - **key**：`ustc-veg-submissions`、`ustc-veg-community-posts`、`ustc-veg-community-author`
 - 由 `src/utils/storage.js` / `src/utils/community.js` 提供读写函数
 
@@ -208,9 +221,11 @@ E:\ustc-vegetation-map\
 
 ```powershell
 cd E:\ustc-vegetation-map
-pnpm dev            # 开发预览 → http://localhost:5173/
-pnpm run build      # 构建 → dist/
-pnpm run preview    # 预览构建产物
+pnpm dev                 # 开发预览 → http://localhost:5173/
+pnpm run build           # 构建 → dist/
+pnpm run preview         # 预览构建产物
+pnpm run validate:data   # 校验物种数据（id、越界坐标、重复点等）
+pnpm test                # Vitest 单元测试
 ```
 
 > 新终端若提示找不到 `pnpm`，需**重启一次 IDE** 让 PATH 生效。
@@ -219,13 +234,15 @@ pnpm run preview    # 预览构建产物
 
 ## 8. 共享给队友（IPv6）
 
-- **一键脚本**：双击 `start-share.bat` → 自动 ①构建 ②选端口（8080 起，占用则顺延至 8090）③打印 IPv6 地址 ④启动服务
+- **一键脚本**：双击 `start-share.bat` → 自动 ①构建 ②选端口（8080 起，占用则顺延至 8090）③打印 IPv6 地址 ④生成并打印随机访问口令 ⑤启动服务
 - **手动命令**：
   ```powershell
-  python -m http.server 8080 --bind "::" --directory "E:\ustc-vegetation-map\dist"
+  node E:\ustc-vegetation-map\server.mjs 8080
   ```
+  需要口令时先 `set VEG_ACCESS_TOKEN=你的口令`；不设则关闭口令。
 - **访问地址**：`http://[IPv6地址]:8080/`（**方括号不可省**）
-- **防火墙**：已按「程序 `python3.13.exe` + **公用(Public)** 网络」放行
+- **访问口令**：`start-share.bat` 默认开启，浏览器弹窗用户名任意、密码填窗口打印的口令
+- **防火墙**：已按「程序 `node.exe` / `python3.13.exe` + **公用(Public)** 网络」放行（若改用 node 服务仍未放行，需补一次 node.exe）
 - 注意：队友需有 IPv6；IPv6 地址会变化（以脚本每次打印的为准）；关闭窗口即停止
 
 ---
@@ -245,7 +262,11 @@ pnpm run preview    # 预览构建产物
 11. **图鉴化改造**：物种库扩容至 **229 种**（对齐《中国科学技术大学校园植物图鉴》）；数据模型新增 `alias / identify / nameOrigin` 字段并为 20 种已记录物种补全；详情页新增「识别特征 / 学名来源」分区；列表页/地图页统一检索（`species.js` 的 `searchText`，支持按别名与识别特征搜索）；卡片展示别名；`meta.reference` 与「使用说明」页标注参考书目
 12. **地图底图收敛**：最终只保留 3 个底图（天地图影像 / 天地图矢量 / 高德标准），默认天地图影像；移除自备高清叠加层、高德卫星/浅色、OSM、天地图地形；`maxZoom` 设为 **18**，避免 19/20 级拉伸
 13. **天地图接入**：新增 `src/utils/coord.js`（GCJ-02 ↔ WGS-84）；`MapView.vue` 支持天地图影像/矢量两套官方 WMTS 图层（各带注记），通过 `.env.local` 的 `VITE_TIANDITU_TK` 启用；切换底图时自动换算点位与视野范围；实测 19/20 级为空白占位图，故限制 18 级；已浏览器验证瓦片、图层切换、42 个点位与 18 级标签均正常
-14. **植物社区 + 数据落盘**：新增社区页（广场发帖、分布点讨论、最多 3 张照片、大图预览）；社区帖子、昵称与投稿统一保存到科大云盘同步文件 `植物地图数据.json`（`server/store.js` + `/api/store`），照片保存为同目录 `图片/` 下的独立文件（`/api/images`），启动读取、变更即写入，`localStorage` 仅作缓存；`pnpm dev`（Vite 中间件）与 `start-share.bat`（`server.mjs`）均已接入
+14. **植物社区 + 数据落盘**：新增社区页（广场发帖、分布点讨论、最多 3 张照片、大图预览）；社区帖子、昵称与投稿统一保存到科大云盘同步文件 `植物地图数据.json`（`server/store.js`），照片保存为同目录 `图片/` 下的独立文件（`/api/images`），启动读取、变更即写入，`localStorage` 仅作缓存；`pnpm dev`（Vite 中间件）与 `start-share.bat`（`server.mjs`）均已接入
+15. **存储并发改造**：`/api/store` 的整表 PUT 已停用，改为按条接口（posts / submissions / author），服务端串行读-改-写；JSON 损坏时拒绝写入；删除记录时同步删除照片
+16. **共享安全**：`server.mjs` 支持 `VEG_ACCESS_TOKEN` 整站 HTTP Basic；`start-share.bat` 默认生成随机口令并打印
+17. **数据可信度分级**：`species.js` 新增 `dataLevelOf / pointAccuracyText`；卡片、详情页、地图弹窗标注「示例坐标 / 实地调查 / 公开资料整理」；`meta.dataNotice` 同步到使用说明页
+18. **演示与交付增强**：`backup-data.bat` / `reset-demo.bat`；批量导入支持 `.xlsx`；`scripts/merge-exports.mjs` 合并去重；Vitest 覆盖坐标、表格、物种筛选与数据分级；新增 `scripts/validate-data.mjs`
 
 ---
 
@@ -253,12 +274,12 @@ pnpm run preview    # 预览构建产物
 
 | # | 限制 / 待办 | 说明 |
 |---|---|---|
-| 1 | **数据非实地调查** | 209 种是候选清单；20 种的 42 个点坐标是**近似示例值**，未实地校准 |
+| 1 | **数据非实地调查** | 209 种是候选清单；20 种的 42 个点坐标是**近似示例值**，页面已以「示例坐标」徽章标注 |
 | 2 | **底图最高 18 级** | 天地图/高德原生最高 18；19/20 级为空白或拉伸，已限制 `maxZoom=18` |
 | 3 | 移动端未专项优化 | 路由已 hash 化，样式未做手机适配 |
-| 4 | 无合并脚本 | 多人各自导出 JSON 后需手动/脚本合并去重（未实现） |
-| 5 | 未部署 | 可 `dist/` 丢 GitHub Pages / Vercel |
-| 6 | 批量导入不支持 .xlsx | 需另存 CSV 或直接粘贴 |
+| 4 | 合并脚本需手动执行 | `pnpm run merge:exports a.json b.json`，未做界面入口 |
+| 5 | 公网静态托管没有数据服务 | GitHub Pages 无 `/api`，社区/投稿回退各浏览器 localStorage；完整演示用 `start-share.bat` |
+| 6 | 无登录与后台审核 | 当前为匿名发帖 + 单一口令保护；正式系统需另加账号、角色与审核流 |
 | 7 | 天地图需自行申请 Key | 无 Key 时仅高德标准底图；Key 需实名、有每日配额，且不要提交到 Git |
 | 8 | 天地图影像无更高层级 | 实测 19/20 级返回 4.7 KB 空白占位图；更高精度需自备高清图或付费服务 |
 
@@ -271,7 +292,10 @@ pnpm run preview    # 预览构建产物
 | 决策 | 原因 |
 |---|---|
 | 选 Web 而非小程序 | 课堂作业、不公开；Web 免账号/审核/开发者工具，开发更快；地图是 Web 强项 |
-| 纯前端、无后端 | 不公开 → 免备案/服务器/数据库；数据用静态 JSON + localStorage |
+| 纯前端、无外部后端 | 不公开 → 免备案/服务器/数据库；数据用静态 JSON + 本地 Node 数据服务（云盘 JSON） |
+| 数据按条写入而非整表覆盖 | 多人同时操作时整表 PUT 会互相覆盖；改为服务端串行读-改-写 |
+| 共享服务默认开启访问口令 | IPv6 公网可直连，无鉴权的写接口可被随意覆盖；Basic 口令用于挡住误操作与随手扫描 |
+| 数据分三级（实地调查/示例坐标/公开资料整理） | 209 种候选清单与 42 个近似坐标必须与实测数据区分，避免被误认为调查成果 |
 | 用 Leaflet + 天地图/高德底图 | 天地图为官方底图；无 Key 时自动回退高德，课程演示可直接运行 |
 | 天地图做成可选接入 | 官方底图更权威，但需 Key 与实名；用 `VITE_TIANDITU_TK` 启用，无 Key 自动降级，不破坏「开箱即用」 |
 | 切换底图时动态换算坐标 | 数据统一存 GCJ-02，避免迁移 42 个点位；显示层按底图转换为 WGS-84，切回即还原 |

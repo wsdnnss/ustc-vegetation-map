@@ -447,10 +447,10 @@ async function submit() {
   publishing.value = true
   try {
     const point = targetPoint.value
-    saveAuthor(author.value)
-    // 照片先写入云盘独立文件，JSON 中只保存图片地址
+    void saveAuthor(author.value)
+    // 照片先写入独立文件，JSON 中只保存图片地址
     const images = await Promise.all(photos.value.map((p) => uploadPhoto(p)))
-    const record = addPost({
+    const record = await addPost({
       author: author.value,
       content: text,
       images,
@@ -462,7 +462,7 @@ async function submit() {
 
     if (!record) {
       for (const url of images) deletePhoto(url)
-      notify('保存失败：本机存储空间不足，请删除旧帖或减少照片后重试', 'err')
+      notify('保存失败：请确认数据服务已启动，或稍后重试', 'err')
       return
     }
 
@@ -486,9 +486,9 @@ async function submit() {
   }
 }
 
-function remove(post) {
+async function remove(post) {
   if (!window.confirm('确定删除这条帖子吗？')) return
-  removePost(post.id)
+  await removePost(post.id)
   posts.value = loadPosts()
 }
 

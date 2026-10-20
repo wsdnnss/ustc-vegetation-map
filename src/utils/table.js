@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 表格解析工具：供「批量导入」使用。
  * 支持从 Excel/WPS 直接粘贴（制表符分隔）或上传 CSV/TSV 文本。
  */
@@ -108,8 +108,18 @@ export function normKey(fileName) {
     .replace(/\.[a-z0-9]+$/i, '')
 }
 
-/** 读取本地表格文件，自动兼容 UTF-8 / GBK 编码 */
-export function readTableFile(file) {
+/** 读取表格文件：xlsx/xls 自动转成制表符文本；CSV/TSV 兼容 UTF-8 / GBK */
+export async function readTableFile(file) {
+  if (/\.(xlsx|xls)$/i.test(file.name || '')) {
+    const buffer = await file.arrayBuffer()
+    const mod = await import('xlsx')
+    const XLSX = mod.default || mod
+    const workbook = XLSX.read(buffer, { type: 'array' })
+    const sheet = workbook.Sheets[workbook.SheetNames[0]]
+    if (!sheet) throw new Error('Excel 中没有可读取的工作表')
+    return XLSX.utils.sheet_to_csv(sheet, { FS: '\t' })
+  }
+
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onerror = () => reject(new Error('读取文件失败'))

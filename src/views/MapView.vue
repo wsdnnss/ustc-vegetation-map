@@ -53,6 +53,9 @@
           <span class="loading-pill"><i></i>地图加载中…</span>
         </div>
       </transition>
+      <p v-if="tileError" class="tile-error">
+        底图瓦片加载失败，请检查网络；点位与筛选仍可正常使用。
+      </p>
     </div>
 
     <p class="hint muted">
@@ -75,7 +78,8 @@ import {
   allMonths,
   speciesImage,
   bloomsIn,
-  searchText
+  searchText,
+  pointAccuracyText
 } from '@/utils/species'
 import { loadSubmissions } from '@/utils/storage'
 import { gcj02ToWgs84 } from '@/utils/coord'
@@ -94,6 +98,7 @@ const keyword = ref('')
 const showSubmissions = ref(true)
 const submissions = ref(loadSubmissions())
 const mapLoading = ref(true)
+const tileError = ref(false)
 let mapLoadTimer = null
 
 function hideMapSkeleton() {
@@ -184,6 +189,7 @@ function popupHtml(s, p) {
       <div class="popup-title">${escapeHtml(s.nameCn)}</div>
       <div class="popup-meta">${escapeHtml(s.family)} · 花期 ${escapeHtml(s.bloomText)}</div>
       <div class="popup-meta">位置：${escapeHtml(p.location)}</div>
+      <div class="popup-meta">坐标：${escapeHtml(pointAccuracyText(p))}</div>
       <div class="popup-actions">
         <a class="popup-link" href="#/species/${s.id}">查看详情 →</a>
         <a class="popup-link" href="#/community?species=${encodeURIComponent(
@@ -333,6 +339,20 @@ onMounted(() => {
   const defaultBase = tiandituEnabled ? tdtImagery : gaodeStandard
   defaultBase.addTo(map)
 
+  // 瓦片加载失败提示（断网/被墙/配额用尽时给出明确反馈，而不是静默白屏）
+  const watchTiles = (layer) => {
+    const targets = layer instanceof L.TileLayer ? [layer] : layer?.getLayers?.() || []
+    for (const tile of targets) {
+      tile.on?.('tileerror', () => {
+        tileError.value = true
+      })
+      tile.on?.('load', () => {
+        tileError.value = false
+      })
+    }
+  }
+  Object.values(baseLayers).forEach(watchTiles)
+
   // 首屏底图瓦片加载完成后隐藏骨架屏（天地图是图层组，取其中第一层监听）
   const tileBase =
     defaultBase instanceof L.TileLayer ? defaultBase : defaultBase.getLayers?.()[0]
@@ -352,6 +372,7 @@ onMounted(() => {
   renderMarkers()
   map.on('zoomend', syncZoomMode)
   map.on('baselayerchange', (e) => {
+    tileError.value = false
     applyCoordMode(wgs84Layers.has(e.layer) ? 'wgs84' : 'gcj02')
   })
   syncZoomMode()
@@ -456,6 +477,23 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.tile-error {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 8px 16px;
+  border: 1px solid #f0dfbe;
+  border-radius: 999px;
+  background: rgba(253, 246, 231, 0.95);
+  color: #8a5a10;
+  font-size: 12.5px;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
 }
 
 .map-skeleton {

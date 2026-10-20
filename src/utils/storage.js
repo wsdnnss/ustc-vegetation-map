@@ -1,8 +1,8 @@
-﻿import { deletePhoto, getCached, isDiskMode, persist } from './diskStore'
+﻿import { apiRequest, deletePhoto, getCached, isDiskMode, setCached } from './diskStore'
 
 const KEY = 'ustc-veg-submissions'
 
-/** 读取投稿（云盘内存缓存优先，localStorage 为回退） */
+/** 读取投稿（数据服务缓存优先，localStorage 为回退） */
 export function loadSubmissions() {
   const cached = getCached(KEY)
   if (Array.isArray(cached)) return cached
@@ -16,42 +16,113 @@ export function loadSubmissions() {
   }
 }
 
-export function saveSubmissions(list) {
-  let localOk = true
+function saveLocal(list) {
+  setCached(KEY, list)
+  return true
+}
+
+function toRecord(item) {
+  return {
+    id: item.id || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    createdAt: item.createdAt || new Date().toISOString(),
+    speciesId: item.speciesId || '',
+    name: item.name || '',
+    lat: Number(item.lat),
+    lng: Number(item.lng),
+    note: item.note || '',
+    collector: item.collector || '',
+    image: item.image || ''
+  }
+}
+
+/** 新增单条投稿 */
+export async function addSubmission(item) {
+  const record = toRecord(item)
+  if (!isDiskMode()) {
+    const list = loadSubmissions()
+    list.push(record)
+    saveLocal(list)
+    return record
+  }
   try {
-    localStorage.setItem(KEY, JSON.stringify(list))
+    const data = await apiRequest('/submissions', { method: 'POST', body: record })
+    if (Array.isArray(data?.items)) setCached(KEY, data.items)
+    return data?.item || record
   } catch (e) {
-    // 浏览器缓存写满不影响云盘保存
-    localOk = false
-    console.warn('浏览器缓存空间不足，投稿仍会保存到科大云盘', e)
+    console.warn('保存投稿失败', e)
+    return null
   }
-  persist(KEY, list)
-  return localOk || isDiskMode()
 }
 
-export function addSubmission(item) {
-  const list = loadSubmissions()
-  const record = {
-    id: `sub-${Date.now()}`,
-    createdAt: new Date().toISOString(),
-    ...item
+/** 批量追加投稿（批量导入 / 导入 JSON 用），返回实际新增条数 */
+export async function addSubmissions(items) {
+  const list = (Array.isArray(items) ? items : [])
+    .map(toRecord)
+    .filter((x) => x.name && Number.isFinite(x.lat) && Number.isFinite(x.lng))
+  if (!list.length) return 0
+
+  if (!isDiskMode()) {
+    const existing = loadSubmissions()
+    const seen = new Set(existing.map((x) => x.id))
+    const next = existing.slice()
+    for (const item of list) {
+      if (seen.has(item.id)) continue
+      seen.add(item.id)
+      next.push(item)
+    }
+    saveLocal(next)
+    return next.length - existing.length
   }
-  list.push(record)
-  return saveSubmissions(list) ? record : null
+
+  try {
+    const data = await apiRequest('/submissions/batch', {
+      method: 'POST',
+      body: { items: list }
+    })
+    if (Array.isArray(data?.items)) setCached(KEY, data.items)
+    return Number(data?.added) || 0
+  } catch (e) {
+    console.warn('批量保存投稿失败', e)
+    return 0
+  }
 }
 
-export function removeSubmission(id) {
-  const list = loadSubmissions()
-  const target = list.find((x) => x.id === id)
-  const next = list.filter((x) => x.id !== id)
-  if (saveSubmissions(next) && target?.image) deletePhoto(target.image)
-  return next
+export async function removeSubmission(id) {
+  const target = loadSubmissions().find((x) => x.id === id)
+
+  if (!isDiskMode()) {
+    const next = loadSubmissions().filter((x) => x.id !== id)
+    saveLocal(next)
+    if (target?.image) deletePhoto(target.image)
+    return next
+  }
+
+  try {
+    const data = await apiRequest(`/submissions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    const next = Array.isArray(data?.items) ? data.items : loadSubmissions().filter((x) => x.id !== id)
+    setCached(KEY, next)
+    return next
+  } catch (e) {
+    console.warn('删除投稿失败', e)
+    return loadSubmissions()
+  }
 }
 
-export function clearSubmissions() {
+export async function clearSubmissions() {
   const list = loadSubmissions()
-  if (!saveSubmissions([])) return
-  for (const item of list) {
-    if (item.image) deletePhoto(item.image)
+
+  if (!isDiskMode()) {
+    saveLocal([])
+    for (const item of list) {
+      if (item.image) deletePhoto(item.image)
+    }
+    return
+  }
+
+  try {
+    const data = await apiRequest('/submissions', { method: 'DELETE' })
+    setCached(KEY, Array.isArray(data?.items) ? data.items : [])
+  } catch (e) {
+    console.warn('清空投稿失败', e)
   }
 }

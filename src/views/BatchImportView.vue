@@ -16,16 +16,16 @@
       <p class="help muted">
         列顺序（有表头即可自动识别）：
         <b>物种, 纬度, 经度, 备注, 照片文件名, 采集人</b>。
-        可直接从 Excel/WPS 框选复制后粘贴到下面，或上传 CSV 文件。
+        可直接从 Excel/WPS 框选复制后粘贴到下面，或上传 CSV / Excel（.xlsx）文件。
       </p>
 
       <div class="row">
         <button class="btn" @click="downloadTemplate">下载 CSV 模板</button>
-        <button class="btn" @click="csvInput.click()">上传 CSV 文件</button>
+        <button class="btn" @click="csvInput.click()">上传 CSV / Excel</button>
         <input
           ref="csvInput"
           type="file"
-          accept=".csv,.tsv,.txt"
+          accept=".csv,.tsv,.txt,.xlsx,.xls"
           hidden
           @change="onCsv"
         />
@@ -146,7 +146,7 @@ import {
 } from '@/utils/table'
 import { fileToResizedDataURL } from '@/utils/image'
 import { uploadPhoto } from '@/utils/diskStore'
-import { loadSubmissions, saveSubmissions } from '@/utils/storage'
+import { addSubmissions } from '@/utils/storage'
 
 const csvInput = ref(null)
 const photoInput = ref(null)
@@ -251,30 +251,26 @@ async function doImport() {
 
   importing.value = true
   try {
-    const list = loadSubmissions()
-    const now = Date.now()
-    for (let i = 0; i < valid.length; i++) {
-      const r = valid[i]
-      list.push({
-        id: `sub-b${now}-${i}`,
-        createdAt: new Date().toISOString(),
+    const records = []
+    for (const r of valid) {
+      records.push({
         speciesId: '',
         name: r.name,
         lat: r.lat,
         lng: r.lng,
         note: r.note,
         collector: r.collector,
-        // 照片逐张写入云盘独立文件，JSON 中只保存图片地址
+        // 照片逐张写入独立文件，JSON 中只保存图片地址
         image: r.image ? await uploadPhoto(r.image) : ''
       })
     }
 
-    const saved = saveSubmissions(list)
+    const added = await addSubmissions(records)
 
-    if (!saved) {
-      return flash('保存失败：照片过多超出浏览器本地容量，请分批导入', 'err')
+    if (!added) {
+      return flash('保存失败：请确认数据服务已启动后重试', 'err')
     }
-    flash(`成功导入 ${valid.length} 条记录`)
+    flash(`成功导入 ${added} 条记录`)
     resetAll(false)
   } finally {
     importing.value = false

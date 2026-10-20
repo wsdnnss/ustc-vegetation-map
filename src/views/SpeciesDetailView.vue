@@ -56,12 +56,18 @@
 
     <section v-if="points.length" class="block">
       <h3 class="block-title">分布位置（{{ points.length }} 处）</h3>
+      <p class="data-note">
+        <span class="data-badge" :class="dataLevel.key">{{ dataLevel.label }}</span>
+        {{ dataLevel.note }}
+      </p>
       <div class="split">
         <ul class="point-list card">
           <li v-for="(p, i) in points" :key="i">
             <span class="idx">{{ i + 1 }}</span>
             <span class="loc">{{ p.location }}</span>
-            <span class="coord muted">{{ p.lat.toFixed(4) }}, {{ p.lng.toFixed(4) }}</span>
+            <span class="coord muted" :title="pointAccuracyText(p)">
+              {{ p.lat.toFixed(4) }}, {{ p.lng.toFixed(4) }}
+            </span>
             <router-link class="point-chat" :to="`/community?species=${species.id}&point=${i}`">
               讨论<template v-if="postCountOf(i)"> {{ postCountOf(i) }}</template>
             </router-link>
@@ -127,7 +133,15 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import L from 'leaflet'
-import { getSpeciesById, speciesImage, campus, aliasesOf, reference } from '@/utils/species'
+import {
+  getSpeciesById,
+  speciesImage,
+  campus,
+  aliasesOf,
+  reference,
+  dataLevelOf,
+  pointAccuracyText
+} from '@/utils/species'
 import { loadSubmissions } from '@/utils/storage'
 import { loadPosts, pointPostCounts } from '@/utils/community'
 
@@ -136,6 +150,7 @@ const species = getSpeciesById(route.params.id)
 
 const points = computed(() => species?.points || [])
 const aliases = computed(() => aliasesOf(species))
+const dataLevel = computed(() => dataLevelOf(species))
 const postCounts = pointPostCounts(loadPosts())
 
 function postCountOf(index) {
@@ -447,6 +462,32 @@ onBeforeUnmount(() => {
   height: 16px;
   border-radius: 4px;
   background: var(--green-500);
+}
+
+.data-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -4px 0 14px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.data-badge {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--amber-050);
+  color: var(--amber);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.data-badge.measured {
+  background: var(--green-050);
+  color: var(--green-700);
 }
 
 .split {

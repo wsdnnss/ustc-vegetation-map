@@ -145,10 +145,10 @@ import L from 'leaflet'
 import { speciesList, getSpeciesById, campus } from '@/utils/species'
 import {
   addSubmission,
+  addSubmissions,
   clearSubmissions,
   loadSubmissions,
-  removeSubmission,
-  saveSubmissions
+  removeSubmission
 } from '@/utils/storage'
 import { downloadJSON, fileToResizedDataURL, readJSONFile } from '@/utils/image'
 import { getDiskStatus, uploadPhoto } from '@/utils/diskStore'
@@ -235,9 +235,9 @@ async function submit() {
 
   saving.value = true
   try {
-    // 照片保存为云盘独立文件，投稿 JSON 只记录图片地址
+    // 照片保存为独立文件，投稿 JSON 只记录图片地址
     const image = form.image ? await uploadPhoto(form.image) : ''
-    const record = addSubmission({
+    const record = await addSubmission({
       speciesId: form.speciesId || '',
       name: form.name,
       lat: Number(form.lat),
@@ -246,7 +246,7 @@ async function submit() {
       image
     })
 
-    if (!record) return flash('保存失败，请减少图片数量后重试', 'err')
+    if (!record) return flash('保存失败：请确认数据服务已启动后重试', 'err')
 
     submissions.value = loadSubmissions()
     flash('已保存，可到“分布地图”查看')
@@ -259,13 +259,13 @@ async function submit() {
   }
 }
 
-function remove(id) {
-  submissions.value = removeSubmission(id)
+async function remove(id) {
+  submissions.value = await removeSubmission(id)
 }
 
-function clearAll() {
+async function clearAll() {
   if (!window.confirm('确定清空全部投稿吗？此操作不可恢复。')) return
-  clearSubmissions()
+  await clearSubmissions()
   submissions.value = []
 }
 
@@ -284,10 +284,9 @@ async function onImport(e) {
   try {
     const data = await readJSONFile(file)
     if (!Array.isArray(data)) throw new Error('文件格式应为投稿数组')
-    const merged = [...loadSubmissions(), ...data]
-    saveSubmissions(merged)
+    const added = await addSubmissions(data)
     submissions.value = loadSubmissions()
-    flash(`已导入 ${data.length} 条`)
+    flash(`已导入 ${added} 条`)
   } catch (err) {
     flash(err.message || '导入失败', 'err')
   } finally {

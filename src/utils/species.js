@@ -99,6 +99,48 @@ export function aliasesOf(species) {
 /** 参考文献（来自 meta.reference） */
 export const reference = raw.meta.reference || null
 
+/** 数据分级说明（来自 meta.dataNotice） */
+export const dataNotice = raw.meta.dataNotice || ''
+
+/**
+ * 物种数据可信度分级：
+ * - candidate 待核实：公开资料整理的候选清单，无校园点位
+ * - example   示例坐标：有分布点，但为演示用近似值（未实测）
+ * - measured  实地调查：点位带 source=实地调查 或 measured=true
+ */
+export function dataLevelOf(species) {
+  const points = species?.points || []
+  if (!points.length) {
+    return {
+      key: 'candidate',
+      label: '公开资料整理',
+      note: '该物种来自公开资料整理的候选清单，尚未在校园内定位，需实地确认。'
+    }
+  }
+  if (points.some((p) => p?.source === '实地调查' || p?.measured === true)) {
+    return {
+      key: 'measured',
+      label: '实地调查',
+      note: '该物种的分布点来自实地调查记录。'
+    }
+  }
+  return {
+    key: 'example',
+    label: '示例坐标',
+    note: '分布点为演示用近似坐标（约 ±50 m），未实地测量，不可作为专业依据。'
+  }
+}
+
+/** 单个点位的精度说明 */
+export function pointAccuracyText(point) {
+  if (!point) return ''
+  if (point.source === '实地调查' || point.measured === true) {
+    return point.coordAccuracy || '实地调查点位'
+  }
+  return point.coordAccuracy || '示例坐标（约 ±50 m，未实测）'
+}
+
+
 /**
  * 统一检索文本：中文名 / 学名 / 别名 / 科属 / 标签 / 描述 / 识别特征 / 学名来源。
  * 供列表页与地图页的关键词搜索复用，保证各处检索口径一致。

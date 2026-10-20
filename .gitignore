@@ -1,4 +1,4 @@
-# 依赖
+﻿# 依赖
 node_modules
 .pnpm-store
 
@@ -30,3 +30,7 @@ pnpm-debug.log*
 
 # 用户导出的数据（保留在本地，不纳入版本管理）
 submissions-export-*.json
+submissions-merged-*.json
+
+# 演示数据备份
+backups/

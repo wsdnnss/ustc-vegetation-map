@@ -9,6 +9,7 @@
       <div class="stats">
         <span class="stat"><b>{{ visiblePoints.length }}</b> 个分布点</span>
         <span class="stat"><b>{{ mappedSpeciesCount }}</b> 个已定位物种</span>
+        <span v-if="plots.length" class="stat"><b>{{ plots.length }}</b> 个地块</span>
         <span v-if="submissions.length" class="stat amber">
           <b>{{ submissions.length }}</b> 条我的投稿
         </span>
@@ -42,11 +43,93 @@
         <span>显示我的投稿</span>
       </label>
 
+      <label v-if="plots.length" class="check">
+        <input v-model="showPlots" type="checkbox" />
+        <span>显示地块</span>
+      </label>
+
+      <button
+        class="btn draw-entry"
+        :class="{ active: selectMode }"
+        type="button"
+        :aria-pressed="Boolean(selectMode)"
+        @click="startSelection('rect')"
+      >
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path
+            d="M2 5V2h3M11 2h3v3M14 11v3h-3M5 14H2v-3"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+          />
+        </svg>
+        框选地块
+      </button>
+
+      <button v-if="plots.length" class="btn btn-ghost" type="button" @click="openPlotManager">
+        地块 {{ plots.length }}
+      </button>
+
       <button class="btn btn-ghost" @click="reset">重置</button>
     </div>
 
-    <div class="map-shell card">
+    <div class="map-layout" :class="{ 'with-panel': panelOpen }">
+      <div class="map-shell card">
       <div ref="mapEl" class="map"></div>
+
+      <div class="map-tools card glass" role="toolbar" aria-label="手动框选工具">
+        <button
+          type="button"
+          class="tool"
+          :class="{ active: selectMode === 'rect' }"
+          :aria-pressed="selectMode === 'rect'"
+          @click="startSelection('rect')"
+        >
+          矩形框选
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ active: selectMode === 'poly' }"
+          :aria-pressed="selectMode === 'poly'"
+          @click="startSelection('poly')"
+        >
+          多边形框选
+        </button>
+        <button
+          v-if="selectMode"
+          type="button"
+          class="tool close"
+          aria-label="退出框选"
+          @click="stopSelection"
+        >
+          ✕
+        </button>
+        <button
+          v-else-if="selection && !panelOpen"
+          type="button"
+          class="tool result"
+          @click="openPlotManager"
+        >
+          查看框选结果
+        </button>
+      </div>
+
+      <p v-if="selectMode" class="select-hint">{{ selectHint }}</p>
+
+      <div
+        v-if="liveBadge"
+        class="live-badge"
+        :style="{ left: `${liveBadge.x}px`, top: `${liveBadge.y}px` }"
+      >
+        {{ liveBadge.text }}
+      </div>
+
+      <transition name="fade">
+        <div v-if="toast" class="map-toast" :class="toast.tone">{{ toast.text }}</div>
+      </transition>
+
       <transition name="fade">
         <div v-if="mapLoading" class="map-loading" aria-hidden="true">
           <div class="map-skeleton skeleton"></div>
@@ -99,6 +182,31 @@
           </ul>
         </section>
       </transition>
+      </div>
+
+      <PlotPanel
+        v-if="panelOpen"
+        :analysis="analysis"
+        :form="plotForm"
+        :editing-plot-id="editingPlotId"
+        :suggestion="suggestion"
+        :plots="plots"
+        :active-plot-id="editingPlotId"
+        :filtering="filtering"
+        @close="closePanel"
+        @save="savePlot"
+        @delete="deleteEditingPlot"
+        @clear="clearSelection"
+        @reselect="startSelection"
+        @expand="expandSelection"
+        @copy="copySelection"
+        @export="exportPlots"
+        @import="importPlots"
+        @focus="openSavedPlot"
+        @touch="formTouched = true"
+        @apply-suggestion="applySuggestions(true)"
+        @remove="removePlot"
+      />
     </div>
 
     <p class="hint muted">
@@ -108,19 +216,22 @@
       在线瓦片原生最高 <b>18 级</b>，地图同样限制在 18 级，避免继续放大的拉伸模糊。
       放大到 <b>18 级</b>起显示物种名称。地图仅显示<b>已记录</b>（有分布点）的物种，其余为待核实的候选清单。
       相近点位会自动聚合为数字标记，点击即可放大展开；同一位置记录到多种植物时会合并为一个数字点，
-      点击可查看该位置的全部物种（不受当前筛选影响）；也可以去
+      点击可查看该位置的全部物种（不受当前筛选影响）。
+      需要统计一片区域时，可以用<b>矩形框选</b>直接拖出范围，或切换到<b>多边形框选</b>沿边界逐点描绘，
+      框选后能拖动圆点微调边界，并保存为可导出的地块；也可以去
       <router-link class="hint-link" to="/season">季节专题</router-link> 按月份查看花期。
     </p>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import L from 'leaflet'
 import 'leaflet.markercluster'
 import 'leaflet.markercluster/dist/MarkerCluster.css'
 import SearchSuggest from '@/components/SearchSuggest.vue'
+import PlotPanel from '@/components/PlotPanel.vue'
 import {
   campus,
   speciesList,
@@ -133,7 +244,22 @@ import {
   groupPointsByLocation
 } from '@/utils/species'
 import { loadSubmissions } from '@/utils/storage'
-import { gcj02ToWgs84 } from '@/utils/coord'
+import { gcj02ToWgs84, wgs84ToGcj02 } from '@/utils/coord'
+import {
+  analyzeSelection,
+  boundsOfRing,
+  expandRectRing,
+  expandRingToInclude,
+  formatArea,
+  loadPlots,
+  mergePlots,
+  nextPlotId,
+  persistPlots,
+  ringAreaM2,
+  ringCenter,
+  ringFromBounds,
+  suggestPlotMeta
+} from '@/utils/plots'
 
 const route = useRoute()
 const router = useRouter()
@@ -142,6 +268,8 @@ const mapEl = ref(null)
 let map = null
 let speciesLayer = null
 let submissionLayer = null
+let plotsLayer = null
+let drawLayer = null
 // 供搜索联想定位使用：`物种id:点位序号` → marker
 const speciesMarkers = new Map()
 
@@ -159,6 +287,33 @@ const tileError = ref(false)
 // 点击“同位置多物种”标记后在图内底部展示位置清单，避免 Leaflet 弹窗被地图边界裁切
 const activeGroup = ref(null)
 let mapLoadTimer = null
+
+/* ── 手动框选与地块 ────────────────────────────────────────── */
+const plots = ref(loadPlots())
+const showPlots = ref(true)
+const panelOpen = ref(false)
+// '' | 'rect' | 'poly'
+const selectMode = ref('')
+// { kind: 'rect'|'poly', ring: [[lat,lng],...], rect: {south,west,north,east}|null }
+const selection = shallowRef(null)
+// 多边形草稿顶点（显示坐标）
+const polyDraft = shallowRef([])
+const editingPlotId = ref('')
+const formTouched = ref(false)
+const liveBadge = ref(null)
+const toast = ref(null)
+const plotForm = reactive({ plotId: '', name: '', landuse: '草坪', color: '#AED581' })
+
+let toastTimer = null
+let rectDrag = null
+let previewRect = null
+let selectionPolygon = null
+let vertexMarkers = []
+let draftShape = null
+let draftVertexMarkers = []
+let draftCursor = null
+let snapHint = null
+let snapPoint = null
 
 function hideMapSkeleton() {
   mapLoading.value = false
@@ -230,6 +385,37 @@ const visibleMarkerGroups = computed(() =>
   markerGroups.value.filter((group) => group.matched > 0)
 )
 
+const filtering = computed(
+  () => Boolean(family.value || month.value || keyword.value.trim())
+)
+
+/** 选区在数据坐标系（GCJ-02）下的顶点，框选分析统一走数据坐标 */
+const selectionDataRing = computed(() =>
+  selection.value ? selection.value.ring.map(([lat, lng]) => toDataLatLng(lat, lng)) : []
+)
+
+const analysis = computed(() =>
+  selectionDataRing.value.length >= 3
+    ? analyzeSelection(selectionDataRing.value, mapPoints.value, visibleIds.value)
+    : null
+)
+
+const suggestion = computed(() =>
+  analysis.value ? suggestPlotMeta(analysis.value, selectionDataRing.value, plots.value) : null
+)
+
+const selectHint = computed(() => {
+  if (selectMode.value === 'rect') {
+    return '按住鼠标拖动框选区域 · Esc 退出（退出后可拖动地图）'
+  }
+  if (selectMode.value === 'poly') {
+    return polyDraft.value.length
+      ? '继续点击添加顶点 · 双击或回车完成 · 点回起点闭合 · Backspace 撤销 · Esc 取消'
+      : '沿地块边界依次点击 · 双击或回车完成 · Esc 退出'
+  }
+  return ''
+})
+
 function escapeHtml(str) {
   return String(str ?? '').replace(
     /[&<>"']/g,
@@ -242,6 +428,23 @@ function toDisplayLatLng(lat, lng) {
   if (coordMode !== 'wgs84') return [lat, lng]
   const [wl, wa] = gcj02ToWgs84(lng, lat)
   return [wa, wl]
+}
+
+/** 当前底图坐标 → 数据坐标（GCJ-02），用于框选分析、地块保存 */
+function toDataLatLng(lat, lng) {
+  if (coordMode !== 'wgs84') return { lat, lng }
+  const [gl, ga] = wgs84ToGcj02(lng, lat)
+  return { lat: ga, lng: gl }
+}
+
+/** 框选范围限制在校园范围内 */
+function clampDisplayLatLng(latlng) {
+  const d = toDataLatLng(latlng.lat, latlng.lng)
+  const b = campus.bounds
+  const lat = Math.min(b.north, Math.max(b.south, d.lat))
+  const lng = Math.min(b.east, Math.max(b.west, d.lng))
+  const [dLat, dLng] = toDisplayLatLng(lat, lng)
+  return L.latLng(dLat, dLng)
 }
 
 function displayBounds(b) {
@@ -427,9 +630,700 @@ function reset() {
   showSubmissions.value = true
 }
 
-/** 切换底图坐标系：重设视野范围，并按新坐标系重绘标记 */
+/* ── 手动框选：矩形 / 多边形 ─────────────────────────────── */
+
+function round6(n) {
+  return Math.round(Number(n) * 1e6) / 1e6
+}
+
+function setToast(text, tone = 'ok') {
+  toast.value = { text, tone }
+  if (toastTimer) window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => {
+    toast.value = null
+    toastTimer = null
+  }, 2600)
+}
+
+function handleIcon() {
+  return L.divIcon({
+    className: 'plot-handle-wrap',
+    html: '<span class="plot-handle"></span>',
+    iconSize: [16, 16],
+    iconAnchor: [8, 8]
+  })
+}
+
+function startSelection(mode) {
+  if (!map) return
+  if (selectMode.value === mode) {
+    stopSelection()
+    return
+  }
+  cancelDraft()
+  removePreviewRect()
+  liveBadge.value = null
+  selectMode.value = mode
+  setToast(
+    mode === 'rect' ? '按住鼠标拖动，框出要统计的区域' : '沿地块边界依次点击，双击或回车完成'
+  )
+}
+
+function stopSelection() {
+  selectMode.value = ''
+  rectDrag = null
+  removePreviewRect()
+  liveBadge.value = null
+  cancelDraft()
+}
+
+function cancelDraft() {
+  polyDraft.value = []
+  draftCursor = null
+  for (const m of draftVertexMarkers) drawLayer?.removeLayer(m)
+  draftVertexMarkers = []
+  if (draftShape && drawLayer) {
+    drawLayer.removeLayer(draftShape)
+    draftShape = null
+  }
+  snapPoint = null
+  if (snapHint && drawLayer) {
+    drawLayer.removeLayer(snapHint)
+    snapHint = null
+  }
+}
+
+function removePreviewRect() {
+  if (previewRect && drawLayer) drawLayer.removeLayer(previewRect)
+  previewRect = null
+}
+
+function ensureDraftShape() {
+  if (!draftShape && drawLayer) {
+    draftShape = L.polygon([], {
+      color: '#1f6b4a',
+      weight: 2,
+      dashArray: '5 4',
+      fillColor: '#3d9d73',
+      fillOpacity: 0.1,
+      interactive: false
+    }).addTo(drawLayer)
+  }
+}
+
+function updateDraftShape() {
+  const pts = polyDraft.value.map(([lat, lng]) => L.latLng(lat, lng))
+  if (!pts.length) {
+    if (draftShape && drawLayer) {
+      drawLayer.removeLayer(draftShape)
+      draftShape = null
+    }
+    return
+  }
+  if (draftCursor) pts.push(draftCursor)
+  ensureDraftShape()
+  draftShape.setLatLngs(pts)
+}
+
+function renderDraftVertices() {
+  if (!drawLayer) return
+  for (const m of draftVertexMarkers) drawLayer.removeLayer(m)
+  draftVertexMarkers = []
+  polyDraft.value.forEach(([lat, lng], i) => {
+    const icon = L.divIcon({
+      className: '',
+      html: `<span class="draft-dot${i === 0 ? ' first' : ''}"></span>`,
+      iconSize: [11, 11],
+      iconAnchor: [5.5, 5.5]
+    })
+    draftVertexMarkers.push(
+      L.marker([lat, lng], { icon, interactive: false, keyboard: false, zIndexOffset: 1100 }).addTo(
+        drawLayer
+      )
+    )
+  })
+}
+
+/** 距离指针最近的分布点（像素吸附）；仅在 18 级单点可见时生效 */
+function findSnapPoint(latlng) {
+  if (!map || map.getZoom() < LABEL_ZOOM) return null
+  const p = map.latLngToContainerPoint(latlng)
+  let best = null
+  let bestD = 12
+  for (const pt of mapPoints.value) {
+    if (!visibleIds.value.has(pt.species.id)) continue
+    const q = map.latLngToContainerPoint(toDisplayLatLng(pt.lat, pt.lng))
+    const d = p.distanceTo(q)
+    if (d < bestD) {
+      bestD = d
+      best = pt
+    }
+  }
+  return best
+}
+
+function onPolygonHover(e) {
+  if (selectMode.value !== 'poly' || !map) return
+  const snap = findSnapPoint(e.latlng)
+  snapPoint = snap
+  if (snap) {
+    const [lat, lng] = toDisplayLatLng(snap.lat, snap.lng)
+    if (!snapHint && drawLayer) {
+      snapHint = L.circleMarker([lat, lng], {
+        radius: 9,
+        color: '#9a6416',
+        weight: 2,
+        fillColor: '#fdf6e7',
+        fillOpacity: 0.95,
+        interactive: false
+      }).addTo(drawLayer)
+    } else if (snapHint) {
+      snapHint.setLatLng([lat, lng])
+    }
+    draftCursor = L.latLng(lat, lng)
+  } else {
+    if (snapHint && drawLayer) {
+      drawLayer.removeLayer(snapHint)
+      snapHint = null
+    }
+    draftCursor = clampDisplayLatLng(e.latlng)
+  }
+  if (polyDraft.value.length) updateDraftShape()
+}
+
+function onPolygonClick(e) {
+  if (selectMode.value !== 'poly' || !map) return
+  if (e.originalEvent?.detail > 1) return
+
+  let latlng = e.latlng
+  if (snapPoint) latlng = L.latLng(...toDisplayLatLng(snapPoint.lat, snapPoint.lng))
+  latlng = clampDisplayLatLng(latlng)
+
+  const draft = polyDraft.value
+  if (draft.length >= 3) {
+    const first = map.latLngToContainerPoint(L.latLng(draft[0][0], draft[0][1]))
+    if (first.distanceTo(map.latLngToContainerPoint(latlng)) <= 12) {
+      finishPolygon()
+      return
+    }
+  }
+  if (draft.length) {
+    const last = map.latLngToContainerPoint(
+      L.latLng(draft[draft.length - 1][0], draft[draft.length - 1][1])
+    )
+    if (last.distanceTo(map.latLngToContainerPoint(latlng)) < 6) return
+  }
+
+  polyDraft.value = [...draft, [latlng.lat, latlng.lng]]
+  draftCursor = null
+  renderDraftVertices()
+  updateDraftShape()
+}
+
+function onPolygonDblClick() {
+  if (selectMode.value === 'poly') finishPolygon()
+}
+
+function undoDraftVertex() {
+  if (!polyDraft.value.length) return
+  polyDraft.value = polyDraft.value.slice(0, -1)
+  renderDraftVertices()
+  updateDraftShape()
+}
+
+function finishPolygon() {
+  const draft = polyDraft.value
+  if (draft.length < 3) {
+    setToast('至少需要 3 个顶点才能围成区域', 'warn')
+    return
+  }
+  const ring = draft.map(([lat, lng]) => [lat, lng])
+  stopSelection()
+  setSelection({ kind: 'poly', ring })
+  const a = analysis.value
+  setToast(a ? `已框选 ${formatArea(a.area)}，可拖动圆点微调` : '框选完成')
+}
+
+/* ── 矩形框选：指针拖拽 ─────────────────────────────────── */
+
+function onMapPointerDown(e) {
+  if (selectMode.value !== 'rect' || !map) return
+  if (e.target?.closest?.('.leaflet-control')) return
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  const start = clampDisplayLatLng(map.mouseEventToLatLng(e))
+  rectDrag = { pointerId: e.pointerId, start, moved: false }
+  try {
+    mapEl.value?.setPointerCapture?.(e.pointerId)
+  } catch (err) {
+    /* 忽略指针捕获失败 */
+  }
+  if (!previewRect && drawLayer) {
+    previewRect = L.rectangle(L.latLngBounds(start, start), {
+      color: '#1f6b4a',
+      weight: 2,
+      dashArray: '6 5',
+      fillColor: '#3d9d73',
+      fillOpacity: 0.12,
+      interactive: false
+    }).addTo(drawLayer)
+  }
+}
+
+function onMapPointerMove(e) {
+  if (!rectDrag || selectMode.value !== 'rect' || !map) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  const startPt = map.latLngToContainerPoint(rectDrag.start)
+  const current = clampDisplayLatLng(map.mouseEventToLatLng(e))
+  const curPt = map.latLngToContainerPoint(current)
+  if (Math.abs(startPt.x - curPt.x) < 3 && Math.abs(startPt.y - curPt.y) < 3) return
+
+  rectDrag.moved = true
+  const bounds = L.latLngBounds(rectDrag.start, current)
+  previewRect?.setBounds(bounds)
+
+  const ring = ringFromBounds({
+    south: bounds.getSouth(),
+    west: bounds.getWest(),
+    north: bounds.getNorth(),
+    east: bounds.getEast()
+  })
+  const live = analyzeSelection(
+    ring.map((p) => toDataLatLng(p.lat, p.lng)),
+    mapPoints.value,
+    visibleIds.value
+  )
+  const width = mapEl.value?.clientWidth || 0
+  liveBadge.value = {
+    x: Math.min(Math.max(curPt.x, 84), Math.max(84, width - 84)),
+    y: Math.max(26, curPt.y - 12),
+    text: `${formatArea(live.area)} · ${live.count} 个点 · ${live.speciesCount} 种`
+  }
+}
+
+function onMapPointerUp(e) {
+  if (!rectDrag || !map) return
+  e.preventDefault()
+  e.stopPropagation()
+  const drag = rectDrag
+  rectDrag = null
+  try {
+    mapEl.value?.releasePointerCapture?.(drag.pointerId)
+  } catch (err) {
+    /* 忽略 */
+  }
+  liveBadge.value = null
+
+  if (!drag.moved || !previewRect) {
+    removePreviewRect()
+    setToast('按住并拖动鼠标来框选区域', 'warn')
+    return
+  }
+
+  const bounds = previewRect.getBounds()
+  removePreviewRect()
+  const ring = ringFromBounds({
+    south: bounds.getSouth(),
+    west: bounds.getWest(),
+    north: bounds.getNorth(),
+    east: bounds.getEast()
+  })
+  const area = ringAreaM2(ring.map((p) => toDataLatLng(p.lat, p.lng)))
+  if (area < 8) {
+    setToast('框选范围太小，请重新拖动', 'warn')
+    return
+  }
+  stopSelection()
+  setSelection({ kind: 'rect', ring: ring.map((p) => [p.lat, p.lng]) })
+  setToast(`已框选 ${formatArea(area)}，可拖动四角圆点微调`)
+}
+
+/** 触屏手势被系统打断时放弃本次框选，避免提交意外范围 */
+function onMapPointerCancel(e) {
+  if (!rectDrag) return
+  e.preventDefault?.()
+  e.stopPropagation?.()
+  try {
+    mapEl.value?.releasePointerCapture?.(rectDrag.pointerId)
+  } catch (err) {
+    /* 忽略 */
+  }
+  rectDrag = null
+  removePreviewRect()
+  liveBadge.value = null
+}
+
+/* ── 选区：渲染、顶点微调与智能推荐 ─────────────────────── */
+
+function setSelection(sel) {
+  selection.value = sel
+  panelOpen.value = true
+  editingPlotId.value = ''
+  formTouched.value = false
+  rebuildSelectionLayer()
+  applySuggestions(true)
+}
+
+function clearSelection() {
+  selection.value = null
+  editingPlotId.value = ''
+  formTouched.value = false
+  if (selectionPolygon && drawLayer) drawLayer.removeLayer(selectionPolygon)
+  selectionPolygon = null
+  for (const m of vertexMarkers) drawLayer?.removeLayer(m)
+  vertexMarkers = []
+  liveBadge.value = null
+  if (!plots.value.length) panelOpen.value = false
+}
+
+function rebuildSelectionLayer() {
+  if (!drawLayer) return
+  if (selectionPolygon) drawLayer.removeLayer(selectionPolygon)
+  selectionPolygon = null
+  for (const m of vertexMarkers) drawLayer.removeLayer(m)
+  vertexMarkers = []
+
+  const sel = selection.value
+  if (!sel || sel.ring.length < 3) return
+  selectionPolygon = L.polygon(
+    sel.ring.map(([lat, lng]) => L.latLng(lat, lng)),
+    {
+      color: '#1f6b4a',
+      weight: 2.5,
+      opacity: 0.95,
+      fillColor: '#3d9d73',
+      fillOpacity: 0.16,
+      dashArray: sel.kind === 'rect' ? '7 5' : null,
+      interactive: false
+    }
+  ).addTo(drawLayer)
+
+  sel.ring.forEach(([lat, lng], i) => {
+    const marker = L.marker([lat, lng], {
+      draggable: true,
+      icon: handleIcon(),
+      keyboard: false,
+      zIndexOffset: 1200,
+      title: '拖动圆点调整边界'
+    })
+    marker.on('drag', () => applyVertexDrag(i, marker.getLatLng()))
+    marker.on('dragend', () => syncSelectionGeometry(-1))
+    marker.addTo(drawLayer)
+    vertexMarkers.push(marker)
+  })
+}
+
+function applyVertexDrag(index, latlng) {
+  const sel = selection.value
+  if (!sel) return
+  const ll = clampDisplayLatLng(latlng)
+
+  if (sel.kind === 'rect') {
+    const opposite = sel.ring[(index + 2) % 4]
+    // 拖到与对角点同一经/纬度会得到 0 宽/0 高的退化矩形，保留上一次有效形状
+    if (Math.abs(ll.lat - opposite[0]) * 111320 < 2) return
+    if (Math.abs(ll.lng - opposite[1]) * 95700 < 2) return
+    const ring = ringFromBounds({
+      south: Math.min(ll.lat, opposite[0]),
+      north: Math.max(ll.lat, opposite[0]),
+      west: Math.min(ll.lng, opposite[1]),
+      east: Math.max(ll.lng, opposite[1])
+    }).map((p) => [p.lat, p.lng])
+    selection.value = { ...sel, ring }
+  } else {
+    const ring = sel.ring.slice()
+    ring[index] = [ll.lat, ll.lng]
+    selection.value = { ...sel, ring }
+  }
+  syncSelectionGeometry(index)
+}
+
+function syncSelectionGeometry(skipIndex) {
+  const sel = selection.value
+  if (!sel) return
+  selectionPolygon?.setLatLngs(sel.ring.map(([lat, lng]) => L.latLng(lat, lng)))
+  vertexMarkers.forEach((m, i) => {
+    if (i === skipIndex) return
+    const [lat, lng] = sel.ring[i]
+    m.setLatLng([lat, lng])
+  })
+}
+
+function applySuggestions(force = false) {
+  const s = suggestion.value
+  if (!s) return
+  if (!force && (formTouched.value || editingPlotId.value)) return
+  plotForm.plotId = editingPlotId.value || nextPlotId(plots.value)
+  plotForm.name = s.name
+  plotForm.landuse = s.landuse
+  plotForm.color = s.color
+  formTouched.value = false
+}
+
+/** 一键纳入边界外 25 m 内的分布点 */
+function expandSelection() {
+  const sel = selection.value
+  const nearby = analysis.value?.nearby || []
+  if (!sel || !nearby.length) return
+  const current = sel.ring.map(([lat, lng]) => ({ lat, lng }))
+  const expanded =
+    sel.kind === 'rect' ? expandRectRing(current, nearby) : expandRingToInclude(current, nearby)
+  selection.value = {
+    ...sel,
+    ring: expanded.map((p) => [p.lat, p.lng]),
+    rect: sel.kind === 'rect' ? boundsOfRing(expanded) : null
+  }
+  rebuildSelectionLayer()
+  setToast(`已纳入边界外 ${nearby.length} 个分布点`)
+}
+
+/* ── 地块：保存 / 删除 / 导入导出 ───────────────────────── */
+
+function buildPlotPayload() {
+  if (!analysis.value || !selection.value) return null
+  const ring = selectionDataRing.value
+  const center = ringCenter(ring)
+  const existing = plots.value.find((p) => p.plotId === editingPlotId.value)
+  const now = new Date().toISOString()
+  return {
+    plotId: plotForm.plotId.trim(),
+    name: plotForm.name.trim(),
+    landuse: plotForm.landuse,
+    color: plotForm.color,
+    polygon: ring.map((p) => [round6(p.lng), round6(p.lat)]),
+    center: [round6(center.lng), round6(center.lat)],
+    dominantSpecies: analysis.value.species.slice(0, 3).map((s) => s.nameCn),
+    areaSize: Math.round(analysis.value.area),
+    note: existing?.note || '',
+    createdAt: existing?.createdAt || now,
+    updatedAt: now
+  }
+}
+
+function savePlot() {
+  const payload = buildPlotPayload()
+  if (!payload) {
+    setToast('请先框选一个区域', 'warn')
+    return
+  }
+  if (analysis.value && analysis.value.area < 10) {
+    setToast('框选范围太小，请拖大一些再保存', 'warn')
+    return
+  }
+  if (!payload.plotId) {
+    setToast('请填写地块编号，如 Z-01', 'warn')
+    return
+  }
+  if (!payload.name) {
+    setToast('请填写地块名称', 'warn')
+    return
+  }
+  const exists = plots.value.find((p) => p.plotId === payload.plotId)
+  if (exists && payload.plotId !== editingPlotId.value) {
+    setToast(`编号 ${payload.plotId} 已存在，请更换或从列表打开编辑`, 'warn')
+    return
+  }
+  const previousId = editingPlotId.value
+  if (exists) {
+    plots.value = plots.value.map((p) => (p.plotId === payload.plotId ? payload : p))
+  } else if (previousId && previousId !== payload.plotId) {
+    // 编辑时改了编号：替换原记录，避免新旧两份同时存在
+    plots.value = [...plots.value.filter((p) => p.plotId !== previousId), payload]
+  } else {
+    plots.value = [...plots.value, payload]
+  }
+  if (!persistPlots(plots.value)) {
+    setToast('浏览器拒绝了本地保存，请点「导出」保存 JSON', 'warn')
+  }
+  editingPlotId.value = payload.plotId
+  formTouched.value = true
+  renderPlots()
+  setToast(exists ? `已更新「${payload.name}」` : `已保存「${payload.name}」`)
+}
+
+function deleteEditingPlot() {
+  const id = editingPlotId.value
+  if (!id) return
+  if (!window.confirm(`确定删除地块「${plotForm.name || id}」吗？`)) return
+  plots.value = plots.value.filter((p) => p.plotId !== id)
+  persistPlots(plots.value)
+  editingPlotId.value = ''
+  clearSelection()
+  renderPlots()
+  setToast('已删除地块')
+}
+
+function removePlot(id) {
+  const target = plots.value.find((p) => p.plotId === id)
+  if (!target) return
+  if (!window.confirm(`确定删除地块「${target.name}」吗？`)) return
+  plots.value = plots.value.filter((p) => p.plotId !== id)
+  persistPlots(plots.value)
+  if (editingPlotId.value === id) {
+    editingPlotId.value = ''
+    clearSelection()
+  }
+  renderPlots()
+  setToast('已删除地块')
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch (e) {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    let ok = false
+    try {
+      ok = document.execCommand('copy')
+    } catch (err) {
+      ok = false
+    }
+    ta.remove()
+    return ok
+  }
+}
+
+async function copySelection() {
+  const payload = buildPlotPayload()
+  if (!payload) return
+  if (!payload.plotId) payload.plotId = nextPlotId(plots.value)
+  if (!payload.name) payload.name = suggestion.value?.name || '未命名地块'
+  const ok = await copyText(JSON.stringify(payload, null, 2))
+  setToast(ok ? '已复制地块 JSON' : '复制被浏览器拦截，请改用「导出」', ok ? 'ok' : 'warn')
+}
+
+function exportPlots() {
+  if (!plots.value.length) {
+    setToast('还没有可导出的地块', 'warn')
+    return
+  }
+  const blob = new Blob([JSON.stringify(plots.value, null, 2)], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'plots.json'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.setTimeout(() => URL.revokeObjectURL(a.href), 3000)
+  setToast('已导出 plots.json')
+}
+
+async function importPlots(file) {
+  try {
+    const text = await file.text()
+    const data = JSON.parse(text)
+    const result = mergePlots(plots.value, data)
+    plots.value = result.list
+    persistPlots(plots.value)
+    renderPlots()
+    const extra = result.skipped ? `，跳过 ${result.skipped} 条` : ''
+    setToast(`导入完成：新增 ${result.added}，覆盖 ${result.replaced}${extra}`)
+  } catch (e) {
+    setToast('这个文件不是合法的 plots.json', 'warn')
+  }
+}
+
+function openPlotManager() {
+  panelOpen.value = true
+}
+
+function closePanel() {
+  panelOpen.value = false
+}
+
+/** 打开已保存地块：回填表单并缩放到该范围 */
+function openSavedPlot(plot) {
+  if (!map) return
+  const ring = plot.polygon.map(([lng, lat]) => toDisplayLatLng(lat, lng))
+  selection.value = { kind: 'poly', ring }
+  editingPlotId.value = plot.plotId
+  plotForm.plotId = plot.plotId
+  plotForm.name = plot.name
+  plotForm.landuse = plot.landuse
+  plotForm.color = plot.color
+  formTouched.value = true
+  panelOpen.value = true
+  rebuildSelectionLayer()
+  map.flyToBounds(L.latLngBounds(ring), {
+    paddingTopLeft: [40, 60],
+    paddingBottomRight: [40, 40],
+    maxZoom: map.getMaxZoom(),
+    duration: 0.45
+  })
+  setToast(`已打开「${plot.name}」`)
+}
+
+/** 已保存地块的彩色面与名称标签 */
+function renderPlots() {
+  if (!plotsLayer) return
+  plotsLayer.clearLayers()
+  if (!showPlots.value) return
+
+  for (const p of plots.value) {
+    const latlngs = p.polygon.map(([lng, lat]) => toDisplayLatLng(lat, lng))
+    if (latlngs.length < 3) continue
+    const poly = L.polygon(latlngs, {
+      color: p.color,
+      weight: 1.8,
+      opacity: 0.9,
+      fillColor: p.color,
+      fillOpacity: 0.15,
+      dashArray: '4 3'
+    })
+    poly.bindTooltip(
+      `<span class="plot-tip"><i style="background:${escapeHtml(p.color)}"></i>${escapeHtml(
+        p.name
+      )}</span>`,
+      { permanent: true, direction: 'center', className: 'plot-label', opacity: 1 }
+    )
+    poly.on('click', (e) => {
+      if (selectMode.value) return
+      L.DomEvent.stopPropagation(e)
+      openSavedPlot(p)
+    })
+    poly.addTo(plotsLayer)
+  }
+}
+
+function onKeydown(e) {
+  const tag = e.target?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) return
+
+  if (e.key === 'Escape') {
+    if (selectMode.value) {
+      stopSelection()
+      setToast('已退出框选')
+    } else if (panelOpen.value) {
+      panelOpen.value = false
+    }
+    return
+  }
+  if (selectMode.value !== 'poly') return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    finishPolygon()
+  } else if (e.key === 'Backspace') {
+    e.preventDefault()
+    undoDraftVertex()
+  }
+}
+
+/** 切换底图坐标系：重设视野范围，并按新坐标系重绘标记与地块 */
 function applyCoordMode(mode) {
   if (!map || mode === coordMode) return
+  const prev = selection.value
+  const dataRing = prev ? prev.ring.map(([lat, lng]) => toDataLatLng(lat, lng)) : null
+
   coordMode = mode
   map.setMaxBounds(displayBounds(campus.bounds))
   map.setView(
@@ -437,7 +1331,22 @@ function applyCoordMode(mode) {
     map.getZoom(),
     { animate: false }
   )
+
+  if (prev && dataRing) {
+    const ring = dataRing.map((p) => toDisplayLatLng(p.lat, p.lng))
+    selection.value = {
+      ...prev,
+      ring,
+      rect:
+        prev.kind === 'rect'
+          ? boundsOfRing(ring.map(([lat, lng]) => ({ lat, lng })))
+          : null
+    }
+    rebuildSelectionLayer()
+  }
+
   renderMarkers()
+  renderPlots()
 }
 
 onMounted(() => {
@@ -529,6 +1438,10 @@ onMounted(() => {
   L.control.layers(baseLayers, {}, { position: 'topright' }).addTo(map)
   L.control.scale({ imperial: false }).addTo(map)
 
+  // 地块面在下、框选交互在上，物种标记由 markerCluster 放在最上层
+  plotsLayer = L.layerGroup().addTo(map)
+  drawLayer = L.layerGroup().addTo(map)
+
   speciesLayer = L.markerClusterGroup({
     showCoverageOnHover: false,
     // 地图只有 17–18 两级，聚合点直接跳到最大缩放展开，不做 spiderfy
@@ -546,24 +1459,77 @@ onMounted(() => {
   submissionLayer = L.layerGroup().addTo(map)
 
   renderMarkers()
+  renderPlots()
+
+  // 矩形框选用指针事件（鼠标/触屏通用），捕获阶段拦截，避免与地图拖动冲突
+  const el = mapEl.value
+  el?.addEventListener('pointerdown', onMapPointerDown, true)
+  el?.addEventListener('pointermove', onMapPointerMove, true)
+  el?.addEventListener('pointerup', onMapPointerUp, true)
+  el?.addEventListener('pointercancel', onMapPointerCancel, true)
+  window.addEventListener('keydown', onKeydown)
+
   map.on('zoomend', syncZoomMode)
   map.on('click', () => {
     activeGroup.value = null
   })
+  map.on('click', onPolygonClick)
+  map.on('dblclick', onPolygonDblClick)
+  map.on('mousemove', onPolygonHover)
   map.on('baselayerchange', (e) => {
     tileError.value = false
+    // 底图坐标系变化时正在描绘的顶点无法换算，直接结束本次框选
+    if (selectMode.value) {
+      stopSelection()
+      setToast('切换底图，已取消本次框选', 'warn')
+    }
     applyCoordMode(wgs84Layers.has(e.layer) ? 'wgs84' : 'gcj02')
   })
   syncZoomMode()
 })
 
 watch([family, month, keyword, showSubmissions], renderMarkers)
+watch([showPlots, plots], renderPlots)
+
+// 结果面板与地图并排时会改变地图宽度，需要让 Leaflet 重新计算尺寸
+watch(panelOpen, () => {
+  nextTick(() => map?.invalidateSize())
+})
+
+// 框选模式下锁定地图拖动 / 双击缩放，退出后恢复
+watch(selectMode, (mode) => {
+  if (!map) return
+  const el = mapEl.value
+  el?.classList.toggle('is-framing', mode === 'rect')
+  el?.classList.toggle('is-polygon', mode === 'poly')
+  if (mode === 'rect') map.dragging.disable()
+  else map.dragging.enable()
+  if (mode === 'poly') map.doubleClickZoom.disable()
+  else map.doubleClickZoom.enable()
+  if (!mode) {
+    snapPoint = null
+    if (snapHint && drawLayer) {
+      drawLayer.removeLayer(snapHint)
+      snapHint = null
+    }
+  }
+})
 
 onBeforeUnmount(() => {
   if (mapLoadTimer) {
     window.clearTimeout(mapLoadTimer)
     mapLoadTimer = null
   }
+  if (toastTimer) {
+    window.clearTimeout(toastTimer)
+    toastTimer = null
+  }
+  const el = mapEl.value
+  el?.removeEventListener('pointerdown', onMapPointerDown, true)
+  el?.removeEventListener('pointermove', onMapPointerMove, true)
+  el?.removeEventListener('pointerup', onMapPointerUp, true)
+  el?.removeEventListener('pointercancel', onMapPointerCancel, true)
+  window.removeEventListener('keydown', onKeydown)
   if (map) {
     map.remove()
     map = null
@@ -635,6 +1601,19 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.map-layout {
+  display: grid;
+  gap: 20px;
+}
+
+/* 宽屏时结果面板与地图并排，避免浮层挡住选区的边界手柄 */
+@media (min-width: 1000px) {
+  .map-layout.with-panel {
+    grid-template-columns: minmax(0, 1fr) 340px;
+    align-items: start;
+  }
+}
+
 .map-shell {
   position: relative;
   overflow: hidden;
@@ -647,6 +1626,209 @@ onBeforeUnmount(() => {
   height: 66vh;
   min-height: 460px;
   overflow: hidden;
+}
+
+.map.is-framing,
+.map.is-polygon {
+  cursor: crosshair;
+}
+
+/* ── 手动框选：入口与地图浮层 ─────────────────────────────── */
+
+.toolbar .draw-entry {
+  padding: 10px 15px;
+  border: 1px dashed var(--green-300);
+  background: var(--green-050);
+  color: var(--green-700);
+  box-shadow: none;
+}
+
+.toolbar .draw-entry:hover {
+  border-style: solid;
+  background: var(--green-100);
+}
+
+.toolbar .draw-entry.active {
+  border-style: solid;
+  border-color: var(--green-700);
+  background: var(--green-700);
+  color: #fff;
+}
+
+.map-tools {
+  position: absolute;
+  z-index: 5;
+  top: 12px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+}
+
+.map-tools .tool {
+  padding: 7px 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.map-tools .tool:hover {
+  background: var(--green-050);
+  color: var(--green-700);
+}
+
+.map-tools .tool.active {
+  background: var(--green-700);
+  box-shadow: 0 6px 14px -8px rgba(18, 69, 50, 0.85);
+  color: #fff;
+}
+
+.map-tools .tool.close {
+  padding: 7px 10px;
+  color: var(--ink-soft);
+}
+
+.select-hint {
+  position: absolute;
+  z-index: 5;
+  top: 58px;
+  left: 50%;
+  max-width: calc(100% - 32px);
+  margin: 0;
+  padding: 6px 14px;
+  border: 1px solid rgba(169, 216, 189, 0.85);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow-sm);
+  color: var(--green-700);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: center;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.live-badge {
+  position: absolute;
+  z-index: 7;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(18, 69, 50, 0.9);
+  box-shadow: 0 8px 20px -10px rgba(18, 69, 50, 0.75);
+  color: #fff;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translate(-50%, -115%);
+  pointer-events: none;
+}
+
+.map-toast {
+  position: absolute;
+  z-index: 8;
+  left: 50%;
+  bottom: 16px;
+  max-width: calc(100% - 40px);
+  padding: 8px 15px;
+  border-radius: 999px;
+  background: rgba(18, 69, 50, 0.92);
+  box-shadow: 0 12px 28px -14px rgba(18, 69, 50, 0.8);
+  color: #fff;
+  font-size: 12px;
+  text-align: center;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.map-toast.warn {
+  background: rgba(154, 100, 22, 0.94);
+}
+
+:deep(.plot-handle-wrap) {
+  border: none;
+  background: transparent;
+}
+
+:deep(.plot-handle) {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border: 2.5px solid var(--green-700);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  cursor: grab;
+}
+
+:deep(.plot-handle:active) {
+  cursor: grabbing;
+}
+
+:deep(.draft-dot) {
+  display: block;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--green-700);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+:deep(.draft-dot.first) {
+  border-color: #9a6416;
+  background: #fdf6e7;
+}
+
+:deep(.plot-label) {
+  padding: 1px 6px;
+  border: 1px solid rgba(46, 125, 50, 0.35);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  color: #1b4d24;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+:deep(.plot-label::before) {
+  display: none;
+}
+
+:deep(.plot-tip) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+:deep(.plot-tip i) {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+@media (max-width: 760px) {
+  .map-tools {
+    top: 8px;
+  }
+
+  .map-tools .tool {
+    padding: 6px 9px;
+    font-size: 11.5px;
+  }
+
+  .select-hint {
+    top: 52px;
+    padding: 5px 10px;
+    font-size: 10.8px;
+  }
 }
 
 .map-loading {

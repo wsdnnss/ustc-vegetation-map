@@ -502,6 +502,32 @@ textarea {
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
 }
 
+/* 同一位置记录到多种植物时的合并标记 */
+.pin-multi {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #3d9d73, #1f6b4a);
+  box-shadow: 0 2px 8px rgba(18, 69, 50, 0.42);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.pin-multi::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border: 2px solid rgba(46, 125, 50, 0.28);
+  border-radius: 50%;
+}
+
 /* ---------- 地图聚合标记 ---------- */
 .marker-cluster {
   display: grid;

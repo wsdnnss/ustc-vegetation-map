@@ -52,6 +52,59 @@ export function allPoints() {
   return out
 }
 
+/** 两点间近似距离（米），校园尺度内足够 */
+export function metersBetween(a, b) {
+  const latScale = 111320
+  const lngScale = latScale * Math.cos((a.lat * Math.PI) / 180)
+  return Math.hypot((a.lat - b.lat) * latScale, (a.lng - b.lng) * lngScale)
+}
+
+/**
+ * 判断两个地点名是否指同一处：
+ * 去掉空白与括注后相同，或一方包含另一方（如「中区景观水池」与「中区景观水池（西岸）」）。
+ */
+export function samePlaceName(a, b) {
+  const clean = (s) =>
+    String(s || '')
+      .replace(/[\s（）()【】\[\]]/g, '')
+      .trim()
+  const x = clean(a)
+  const y = clean(b)
+  if (!x || !y) return false
+  if (x === y) return true
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x]
+  return short.length >= 3 && long.includes(short)
+}
+
+/**
+ * 把同一位置的点位合并成一组。
+ * 校园内同一花坛常记录多种植物：默认 8 m 内视为同一位置；
+ * 示例坐标有 ±50 m 误差，同一地名（含「（西岸）」这类细分写法）也视为同一位置，
+ * 避免标记重叠后只能点到最上面一个。
+ */
+export function groupPointsByLocation(points, radiusMeters = 8) {
+  const groups = []
+  for (const p of points) {
+    const hits = groups.filter((g) =>
+      g.points.some(
+        (q) => metersBetween(q, p) <= radiusMeters || samePlaceName(q.location, p.location)
+      )
+    )
+    if (!hits.length) {
+      groups.push({ lat: p.lat, lng: p.lng, points: [p] })
+      continue
+    }
+    // 新点位可能同时连接多个已有分组，合并为一组
+    const [first, ...rest] = hits
+    first.points.push(p)
+    for (const g of rest) {
+      first.points.push(...g.points)
+      groups.splice(groups.indexOf(g), 1)
+    }
+  }
+  return groups
+}
+
 /** 判断某物种是否在指定月份开花 */
 export function bloomsIn(species, month) {
   if (!month) return true

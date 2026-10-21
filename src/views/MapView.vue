@@ -56,6 +56,49 @@
       <p v-if="tileError" class="tile-error">
         底图瓦片加载失败，请检查网络；点位与筛选仍可正常使用。
       </p>
+
+      <transition name="location">
+        <section v-if="activeGroup" class="location-card card" aria-live="polite">
+          <div class="location-head">
+            <div>
+              <h4>该位置有 {{ activeGroup.points.length }} 种植物</h4>
+              <p>
+                {{ groupLocations(activeGroup) }} ·
+                {{ pointAccuracyText(activeGroup.points[0]) }}
+                <template
+                  v-if="activeGroup.matched && activeGroup.matched < activeGroup.points.length"
+                >
+                  · 当前筛选命中 {{ activeGroup.matched }} 种
+                </template>
+              </p>
+            </div>
+            <button
+              class="location-close"
+              type="button"
+              aria-label="关闭位置清单"
+              @click="activeGroup = null"
+            >
+              ×
+            </button>
+          </div>
+          <ul class="location-list">
+            <li v-for="p in activeGroup.points" :key="`${p.species.id}-${p.pointIndex}`">
+              <router-link class="location-name" :to="`/species/${p.species.id}`">
+                {{ p.species.nameCn }}
+              </router-link>
+              <span class="location-sub">
+                {{ p.species.family }} · 花期 {{ p.species.bloomText }}
+              </span>
+              <router-link
+                class="location-chat"
+                :to="`/community?species=${p.species.id}&point=${p.pointIndex}`"
+              >
+                讨论
+              </router-link>
+            </li>
+          </ul>
+        </section>
+      </transition>
     </div>
 
     <p class="hint muted">
@@ -64,7 +107,8 @@
       ><template v-else>天地图图层未启用，配置 VITE_TIANDITU_TK 后自动出现在图层控件中；</template>
       在线瓦片原生最高 <b>18 级</b>，地图同样限制在 18 级，避免继续放大的拉伸模糊。
       放大到 <b>18 级</b>起显示物种名称。地图仅显示<b>已记录</b>（有分布点）的物种，其余为待核实的候选清单。
-      相近点位会自动聚合为数字标记，点击即可放大展开；也可以去
+      相近点位会自动聚合为数字标记，点击即可放大展开；同一位置记录到多种植物时会合并为一个数字点，
+      点击可查看该位置的全部物种（不受当前筛选影响）；也可以去
       <router-link class="hint-link" to="/season">季节专题</router-link> 按月份查看花期。
     </p>
   </div>
@@ -85,7 +129,8 @@ import {
   speciesImage,
   bloomsIn,
   searchText,
-  pointAccuracyText
+  pointAccuracyText,
+  groupPointsByLocation
 } from '@/utils/species'
 import { loadSubmissions } from '@/utils/storage'
 import { gcj02ToWgs84 } from '@/utils/coord'
@@ -111,6 +156,8 @@ const showSubmissions = ref(true)
 const submissions = ref(loadSubmissions())
 const mapLoading = ref(true)
 const tileError = ref(false)
+// 点击“同位置多物种”标记后在图内底部展示位置清单，避免 Leaflet 弹窗被地图边界裁切
+const activeGroup = ref(null)
 let mapLoadTimer = null
 
 function hideMapSkeleton() {
@@ -145,20 +192,42 @@ const visibleSpecies = computed(() => {
   })
 })
 
-const visiblePoints = computed(() => {
+/** 全部已记录物种的点位（不受筛选影响），用于按物理位置合并 */
+const mapPoints = computed(() => {
   const out = []
-  for (const s of visibleSpecies.value) {
-    const points = s.points || []
-    points.forEach((p, pointIndex) => {
+  for (const s of speciesList) {
+    ;(s.points || []).forEach((p, pointIndex) => {
       out.push({ ...p, pointIndex, species: s })
     })
   }
   return out
 })
 
+const visibleIds = computed(() => new Set(visibleSpecies.value.map((s) => s.id)))
+
+const visiblePoints = computed(() =>
+  mapPoints.value.filter((p) => visibleIds.value.has(p.species.id))
+)
+
 /** 实际有分布点的物种数（待核实物种不计入） */
 const mappedSpeciesCount = computed(
   () => new Set(visiblePoints.value.map((p) => p.species.id)).size
+)
+
+// 同一位置的多个物种合并为一组；弹窗始终列出该位置的全部物种，不受筛选影响
+const markerGroups = computed(() =>
+  groupPointsByLocation(mapPoints.value).map((group) => {
+    const matched = group.points.filter((p) => visibleIds.value.has(p.species.id)).length
+    // 命中的物种排在前面，便于弹窗和标签优先展示当前搜索目标
+    const points = [...group.points].sort(
+      (a, b) => Number(visibleIds.value.has(b.species.id)) - Number(visibleIds.value.has(a.species.id))
+    )
+    return { ...group, points, matched }
+  })
+)
+
+const visibleMarkerGroups = computed(() =>
+  markerGroups.value.filter((group) => group.matched > 0)
 )
 
 function escapeHtml(str) {
@@ -193,9 +262,11 @@ function dotIcon(color) {
   })
 }
 
-/** 聚合标记：数字越大圆圈越大，配色沿用站点主色 */
+/** 聚合标记：数字为该聚合下全部物种点位数，数字越大圆圈越大 */
 function clusterIcon(cluster) {
-  const count = cluster.getChildCount()
+  const count = cluster
+    .getAllChildMarkers()
+    .reduce((sum, marker) => sum + (marker._recordCount || 1), 0)
   const size = count < 10 ? 34 : count < 30 ? 40 : 46
   const tone = count < 10 ? 'sm' : count < 30 ? 'md' : 'lg'
   return L.divIcon({
@@ -203,6 +274,28 @@ function clusterIcon(cluster) {
     html: `<span>${count}</span>`,
     iconSize: L.point(size, size)
   })
+}
+
+/** 同一位置记录到多种植物时的合并标记 */
+function multiIcon(count) {
+  return L.divIcon({
+    className: 'pin-multi-wrap',
+    html: `<div class="pin-multi">${count}</div>`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -13]
+  })
+}
+
+function groupTitle(group) {
+  return group.points.length > 1
+    ? `${group.points[0].species.nameCn} 等 ${group.points.length} 种`
+    : group.points[0].species.nameCn
+}
+
+/** 合并后的位置可能包含多个地名写法（如「中区景观水池」「中区景观水池（西岸）」） */
+function groupLocations(group) {
+  return [...new Set(group.points.map((p) => p.location).filter(Boolean))].join(' / ')
 }
 
 function popupHtml(s, p) {
@@ -249,22 +342,41 @@ function renderMarkers() {
   speciesLayer.clearLayers()
   submissionLayer.clearLayers()
   speciesMarkers.clear()
+  activeGroup.value = null
 
-  for (const p of visiblePoints.value) {
-    const marker = L.marker(toDisplayLatLng(p.lat, p.lng), {
-      icon: dotIcon(SPECIES_COLOR),
-      title: p.species.nameCn
+  for (const group of visibleMarkerGroups.value) {
+    const multi = group.points.length > 1
+    const title = groupTitle(group)
+    const marker = L.marker(toDisplayLatLng(group.lat, group.lng), {
+      icon: multi ? multiIcon(group.points.length) : dotIcon(SPECIES_COLOR),
+      title
     })
-    marker.bindPopup(popupHtml(p.species, p))
+    marker._group = group
+    if (multi) {
+      // 同一位置多种植物：用图内清单展示全部物种，不依赖可能被裁切的弹窗
+      marker.on('click', () => {
+        activeGroup.value = group
+      })
+    } else {
+      marker.bindPopup(popupHtml(group.points[0].species, group.points[0]))
+      marker.on('click', () => {
+        activeGroup.value = null
+      })
+    }
     // 放大到 18 级起显示物种名称（显隐由地图容器上的 .show-labels 控制）
-    marker.bindTooltip(p.species.nameCn, {
+    marker.bindTooltip(title, {
       permanent: true,
       direction: 'right',
-      offset: [7, 0],
+      offset: multi ? [14, 0] : [7, 0],
       className: 'marker-label',
       opacity: 1
     })
-    speciesMarkers.set(`${p.species.id}:${p.pointIndex}`, marker)
+    // 同组内每个物种的每个点位都指向这个合并标记，搜索定位仍可用
+    for (const p of group.points) {
+      speciesMarkers.set(`${p.species.id}:${p.pointIndex}`, marker)
+    }
+    // 聚合圆圈统计的是物种点位总数，而非合并后的标记数
+    marker._recordCount = group.points.length
     speciesLayer.addLayer(marker)
   }
 
@@ -297,8 +409,14 @@ function onSelectSpecies(species) {
   nextTick(() => {
     const marker = speciesMarkers.get(`${species.id}:0`)
     if (!marker) return
-    // 聚合状态下先展开到该标记，再打开弹窗
-    speciesLayer.zoomToShowLayer(marker, () => marker.openPopup())
+    // 聚合状态下先展开到该标记；同位置多物种时打开位置清单
+    speciesLayer.zoomToShowLayer(marker, () => {
+      if (marker._group && marker._group.points.length > 1) {
+        activeGroup.value = marker._group
+      } else {
+        marker.openPopup()
+      }
+    })
   })
 }
 
@@ -429,6 +547,9 @@ onMounted(() => {
 
   renderMarkers()
   map.on('zoomend', syncZoomMode)
+  map.on('click', () => {
+    activeGroup.value = null
+  })
   map.on('baselayerchange', (e) => {
     tileError.value = false
     applyCoordMode(wgs84Layers.has(e.layer) ? 'wgs84' : 'gcj02')
@@ -552,6 +673,129 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
   white-space: nowrap;
   box-shadow: var(--shadow-sm);
+}
+
+/* 同位置多物种：图内底部清单，避免弹窗被地图边界裁切 */
+.location-card {
+  position: absolute;
+  z-index: 5;
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  max-height: min(48%, 320px);
+  overflow: hidden;
+  border-color: rgba(169, 216, 189, 0.85);
+  box-shadow: 0 22px 46px -26px rgba(18, 69, 50, 0.6), 0 2px 8px rgba(18, 69, 50, 0.08);
+}
+
+.location-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(140deg, #f4faf5, #fff);
+}
+
+.location-head h4 {
+  margin: 0 0 3px;
+  color: var(--ink-strong);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.location-head p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.location-close {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink-soft);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.location-close:hover {
+  border-color: var(--green-300);
+  background: var(--green-050);
+  color: var(--green-700);
+}
+
+.location-list {
+  flex: 1;
+  margin: 0;
+  padding: 4px 16px 10px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.location-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px dashed var(--line);
+}
+
+.location-list li:first-child {
+  border-top: none;
+}
+
+.location-name {
+  flex: 0 0 auto;
+  color: var(--green-700);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.location-name:hover {
+  text-decoration: underline;
+}
+
+.location-sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.location-chat {
+  flex: 0 0 auto;
+  color: var(--green-600);
+  font-size: 11.5px;
+}
+
+.location-chat:hover {
+  color: var(--green-700);
+  text-decoration: underline;
+}
+
+.location-enter-active,
+.location-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.location-enter-from,
+.location-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
 }
 
 .map-skeleton {

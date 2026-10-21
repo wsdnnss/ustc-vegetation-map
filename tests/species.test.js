@@ -11,7 +11,10 @@ import {
   fruitMonthsOf,
   fruitsIn,
   seasonOf,
-  SEASONS
+  SEASONS,
+  metersBetween,
+  groupPointsByLocation,
+  samePlaceName
 } from '../src/utils/species.js'
 
 describe('物种数据与筛选', () => {
@@ -105,5 +108,43 @@ describe('物种数据与筛选', () => {
     expect(seasonOf(10).key).toBe('autumn')
     expect(seasonOf(1).key).toBe('winter')
     expect(seasonOf(12).key).toBe('winter')
+  })
+
+  it('同位置点位合并：8 m 内归为一组，超出则分开', () => {
+    const pts = [
+      { lat: 31.8418, lng: 117.2624, name: '香樟' },
+      { lat: 31.8418, lng: 117.2624, name: '悬铃木' },
+      { lat: 31.839, lng: 117.2626, name: '广玉兰' },
+      { lat: 31.8418, lng: 117.263, name: '银杏' }
+    ]
+    const groups = groupPointsByLocation(pts)
+    expect(groups).toHaveLength(3)
+    expect(groups[0].points.map((p) => p.name)).toEqual(['香樟', '悬铃木'])
+    expect(groups[1].points.map((p) => p.name)).toEqual(['广玉兰'])
+    expect(groups[2].points.map((p) => p.name)).toEqual(['银杏'])
+    expect(groups.reduce((sum, g) => sum + g.points.length, 0)).toBe(pts.length)
+  })
+
+  it('距离计算：同点为 0，纬度 0.001° 约 111 m', () => {
+    const a = { lat: 31.84, lng: 117.26 }
+    expect(metersBetween(a, a)).toBe(0)
+    const d = metersBetween(a, { lat: 31.841, lng: 117.26 })
+    expect(d).toBeGreaterThan(100)
+    expect(d).toBeLessThan(115)
+  })
+
+  it('同一地名的不同写法（含括注细分）也算同一位置', () => {
+    const pts = [
+      { lat: 31.8388, lng: 117.2602, location: '中区景观水池畔', name: '荷花' },
+      { lat: 31.8388, lng: 117.2602, location: '中区景观水池', name: '垂柳' },
+      { lat: 31.8388, lng: 117.2608, location: '中区景观水池（西岸）', name: '睡莲' },
+      { lat: 31.8418, lng: 117.2624, location: '中区北门主干道', name: '香樟' }
+    ]
+    const groups = groupPointsByLocation(pts)
+    expect(groups).toHaveLength(2)
+    expect(groups[0].points.map((p) => p.name)).toEqual(['荷花', '垂柳', '睡莲'])
+    expect(groups[1].points.map((p) => p.name)).toEqual(['香樟'])
+    expect(samePlaceName('中区景观水池（西岸）', '中区景观水池')).toBe(true)
+    expect(samePlaceName('中区中心广场', '中区中心花园')).toBe(false)
   })
 })

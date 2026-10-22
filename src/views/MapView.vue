@@ -112,7 +112,8 @@
           class="tool result"
           @click="openPlotManager"
         >
-          查看框选结果
+          <span class="wide-only">查看框选结果</span>
+          <span class="narrow-only">结果</span>
         </button>
       </div>
 
@@ -186,6 +187,7 @@
 
       <PlotPanel
         v-if="panelOpen"
+        ref="plotPanelRef"
         :analysis="analysis"
         :form="plotForm"
         :editing-plot-id="editingPlotId"
@@ -265,6 +267,7 @@ const route = useRoute()
 const router = useRouter()
 
 const mapEl = ref(null)
+const plotPanelRef = ref(null)
 let map = null
 let speciesLayer = null
 let submissionLayer = null
@@ -522,12 +525,42 @@ function popupHtml(s, p) {
 function subPopupHtml(sub) {
   const img = sub.image ? `<img class="popup-img" src="${sub.image}" alt="投稿图片" />` : ''
   const note = sub.note ? ` · ${escapeHtml(sub.note)}` : ''
+  const ring = submissionRing(sub)
+  if (ring) {
+    const area = ringAreaM2(ring.map(([lat, lng]) => ({ lat, lng })))
+    return `
+      <div>
+        ${img}
+        <div class="popup-title">${escapeHtml(sub.name)}</div>
+        <div class="popup-meta">我的投稿 · 地块分布${note}</div>
+        <div class="popup-meta">分布范围：${escapeHtml(formatArea(area))}</div>
+      </div>`
+  }
+  const coord =
+    Number.isFinite(sub.lat) && Number.isFinite(sub.lng)
+      ? `${sub.lat.toFixed(5)}, ${sub.lng.toFixed(5)}`
+      : '—'
   return `
     <div>
       ${img}
       <div class="popup-title">${escapeHtml(sub.name)}</div>
       <div class="popup-meta">我的投稿${note}</div>
+      <div class="popup-meta">坐标：${coord}</div>
     </div>`
+}
+
+/** 投稿地块的 [[lng,lat],...] → [[lat,lng],...]；不足 3 个有效顶点返回 null */
+function submissionRing(sub) {
+  if (!Array.isArray(sub?.polygon) || sub.polygon.length < 3) return null
+  const ring = []
+  for (const item of sub.polygon) {
+    if (!Array.isArray(item) || item.length < 2) continue
+    const lng = Number(item[0])
+    const lat = Number(item[1])
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue
+    ring.push([lat, lng])
+  }
+  return ring.length >= 3 ? ring : null
 }
 
 function updateLabelVisibility() {
@@ -585,6 +618,30 @@ function renderMarkers() {
 
   if (showSubmissions.value) {
     for (const sub of submissions.value) {
+      const ring = submissionRing(sub)
+      if (ring) {
+        // 投稿的地块范围：画成橙色块，点击查看照片与面积
+        const polygon = L.polygon(
+          ring.map(([lat, lng]) => toDisplayLatLng(lat, lng)),
+          {
+            color: SUB_COLOR,
+            weight: 2,
+            opacity: 0.95,
+            fillColor: SUB_COLOR,
+            fillOpacity: 0.2,
+            dashArray: '5 4'
+          }
+        )
+        polygon.bindPopup(subPopupHtml(sub))
+        polygon.bindTooltip(sub.name, {
+          permanent: true,
+          direction: 'center',
+          className: 'sub-label',
+          opacity: 1
+        })
+        polygon.addTo(submissionLayer)
+        continue
+      }
       if (typeof sub.lat !== 'number' || typeof sub.lng !== 'number') continue
       L.marker(toDisplayLatLng(sub.lat, sub.lng), {
         icon: dotIcon(SUB_COLOR),
@@ -966,6 +1023,15 @@ function setSelection(sel) {
   formTouched.value = false
   rebuildSelectionLayer()
   applySuggestions(true)
+  scrollPanelIntoView()
+}
+
+/** 窄屏时结果面板在地图下方，框选完成后自动滚到面板 */
+function scrollPanelIntoView() {
+  if (!window.matchMedia('(max-width: 999px)').matches) return
+  nextTick(() => {
+    plotPanelRef.value?.$el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
 }
 
 function clearSelection() {
@@ -1235,6 +1301,7 @@ async function importPlots(file) {
 
 function openPlotManager() {
   panelOpen.value = true
+  scrollPanelIntoView()
 }
 
 function closePanel() {
@@ -1814,13 +1881,63 @@ onBeforeUnmount(() => {
   border-radius: 50%;
 }
 
+.narrow-only {
+  display: none;
+}
+
 @media (max-width: 760px) {
+  .toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: end;
+    gap: 10px 12px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+
+  .toolbar .f.grow {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .toolbar .f select,
+  .toolbar .f input {
+    width: 100%;
+  }
+
+  .toolbar .check {
+    min-height: 40px;
+    padding-bottom: 0;
+    align-self: center;
+  }
+
+  .toolbar .btn {
+    width: 100%;
+    min-height: 42px;
+  }
+
+  .toolbar > .btn:last-child {
+    grid-column: 1 / -1;
+  }
+
+  /* 手机上去掉透明按钮样式，保证可点区域清晰可见 */
+  .toolbar .btn-ghost {
+    border-color: var(--line);
+    background: #fff;
+  }
+
+  .map {
+    height: 58vh;
+    min-height: 340px;
+  }
+
   .map-tools {
     top: 8px;
+    padding: 3px;
   }
 
   .map-tools .tool {
-    padding: 6px 9px;
+    padding: 8px 9px;
     font-size: 11.5px;
   }
 
@@ -1828,6 +1945,76 @@ onBeforeUnmount(() => {
     top: 52px;
     padding: 5px 10px;
     font-size: 10.8px;
+  }
+
+  .location-card {
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    max-height: 52%;
+  }
+
+  .location-close {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+@media (max-width: 640px) {
+  .wide-only {
+    display: none;
+  }
+
+  .narrow-only {
+    display: inline;
+  }
+
+  /* 地图页优先把首屏留给地图，说明文字在下方提示里已有 */
+  .map-page .page-sub {
+    display: none;
+  }
+
+  .map-page .page-head {
+    margin-bottom: 16px;
+  }
+
+  .toolbar {
+    padding: 12px;
+    gap: 9px 10px;
+  }
+
+  .toolbar .draw-entry {
+    padding: 10px 8px;
+    font-size: 13px;
+  }
+
+  .map-toast {
+    bottom: 10px;
+    font-size: 11.5px;
+  }
+}
+
+/* 触屏设备：放大控件与边界圆点的可点击范围 */
+@media (hover: none) and (pointer: coarse) {
+  .map-tools .tool {
+    min-height: 36px;
+  }
+
+  .map-tools .tool.close {
+    min-width: 38px;
+  }
+
+  :deep(.leaflet-control-zoom a) {
+    width: 36px;
+    height: 36px;
+    line-height: 36px;
+    font-size: 19px;
+  }
+
+  :deep(.plot-handle-wrap)::after {
+    content: '';
+    position: absolute;
+    inset: -8px;
   }
 }
 
@@ -2092,6 +2279,22 @@ onBeforeUnmount(() => {
 
 .map.show-labels :deep(.marker-label) {
   display: block;
+}
+
+/* 我的投稿地块的名称标签（橙色系，和物种标签区分） */
+:deep(.sub-label) {
+  padding: 1px 6px;
+  border: 1px solid rgba(224, 142, 11, 0.45);
+  border-radius: 6px;
+  background: rgba(255, 251, 240, 0.94);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  color: #8a5a10;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+:deep(.sub-label::before) {
+  display: none;
 }
 
 :deep(.leaflet-tooltip-right::before) {

@@ -606,10 +606,47 @@ function onFile(e) {
 @media (max-width: 999px) {
   .plot-panel {
     max-height: none;
+    scroll-margin-top: 108px;
   }
 
   .panel-body {
     max-height: 70vh;
+  }
+
+  /* 文字按钮在地图上不好点，窄屏时给足触控高度 */
+  .actions.sub {
+    gap: 2px 14px;
+  }
+
+  .actions.sub .link-btn {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+  }
+}
+
+@media (max-width: 640px) {
+  .panel-head {
+    padding: 12px 13px 10px;
+  }
+
+  .panel-body {
+    padding: 10px 12px 12px;
+  }
+
+  .actions .btn {
+    min-height: 40px;
+  }
+
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .plot-list .del {
+    width: 32px;
+    height: 32px;
+    font-size: 16px;
   }
 }
 </style>

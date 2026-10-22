@@ -69,10 +69,35 @@ function normalizePost(input) {
   }
 }
 
+function submissionPolygon(value) {
+  if (!Array.isArray(value)) return []
+  const ring = []
+  for (const item of value.slice(0, 200)) {
+    if (!Array.isArray(item) || item.length < 2) continue
+    const lng = Number(item[0])
+    const lat = Number(item[1])
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) continue
+    ring.push([Number(lng.toFixed(6)), Number(lat.toFixed(6))])
+  }
+  return ring.length >= 3 ? ring : []
+}
+
+function submissionNumber(value) {
+  if (value === null || value === undefined || value === '') return NaN
+  return Number(value)
+}
+
 function normalizeSubmission(input) {
   const src = input && typeof input === 'object' ? input : {}
-  const lat = Number(src.lat)
-  const lng = Number(src.lng)
+  const polygon = submissionPolygon(src.polygon)
+  let lat = submissionNumber(src.lat)
+  let lng = submissionNumber(src.lng)
+  // 只提交地块时，用顶点平均值作为中心，保证旧接口的经纬度校验仍可复用
+  if ((!Number.isFinite(lat) || !Number.isFinite(lng)) && polygon.length) {
+    lat = polygon.reduce((sum, p) => sum + p[1], 0) / polygon.length
+    lng = polygon.reduce((sum, p) => sum + p[0], 0) / polygon.length
+  }
   return {
     id: src.id ? text(src.id, 80) : makeId('sub'),
     createdAt: src.createdAt ? text(src.createdAt, 40) : new Date().toISOString(),
@@ -80,6 +105,8 @@ function normalizeSubmission(input) {
     name: text(src.name, 80),
     lat: Number.isFinite(lat) ? lat : null,
     lng: Number.isFinite(lng) ? lng : null,
+    polygon,
+    areaSize: polygon.length ? Math.max(0, Math.round(submissionNumber(src.areaSize) || 0)) : 0,
     note: text(src.note),
     collector: text(src.collector, 60),
     image: text(src.image, 500)

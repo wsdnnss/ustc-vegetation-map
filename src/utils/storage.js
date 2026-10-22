@@ -21,14 +21,43 @@ function saveLocal(list) {
   return true
 }
 
+function normalizePolygon(value) {
+  if (!Array.isArray(value)) return []
+  const ring = []
+  for (const item of value.slice(0, 200)) {
+    if (!Array.isArray(item) || item.length < 2) continue
+    const lng = Number(item[0])
+    const lat = Number(item[1])
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) continue
+    ring.push([Number(lng.toFixed(6)), Number(lat.toFixed(6))])
+  }
+  return ring.length >= 3 ? ring : []
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return NaN
+  return Number(value)
+}
+
 function toRecord(item) {
+  const polygon = normalizePolygon(item.polygon)
+  let lat = toNumber(item.lat)
+  let lng = toNumber(item.lng)
+  // 只有地块、没有中心坐标时，用顶点平均值作为中心，兼容只传 polygon 的导入文件
+  if ((!Number.isFinite(lat) || !Number.isFinite(lng)) && polygon.length) {
+    lat = polygon.reduce((sum, p) => sum + p[1], 0) / polygon.length
+    lng = polygon.reduce((sum, p) => sum + p[0], 0) / polygon.length
+  }
   return {
     id: item.id || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     createdAt: item.createdAt || new Date().toISOString(),
     speciesId: item.speciesId || '',
     name: item.name || '',
-    lat: Number(item.lat),
-    lng: Number(item.lng),
+    lat,
+    lng,
+    polygon,
+    areaSize: polygon.length ? Math.max(0, Math.round(Number(item.areaSize) || 0)) : 0,
     note: item.note || '',
     collector: item.collector || '',
     image: item.image || ''

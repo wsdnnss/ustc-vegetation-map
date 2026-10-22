@@ -227,14 +227,14 @@ function isActive(item) {
 
   .nav {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 2px;
     overflow: visible;
     border-radius: 15px;
   }
 
   .nav-link {
-    padding: 8px 4px;
+    padding: 8px 2px;
     text-align: center;
     font-size: 12.5px;
   }

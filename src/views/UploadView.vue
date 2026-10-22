@@ -5,7 +5,7 @@
         <p class="eyebrow">Contribute</p>
         <h2 class="page-title">上传投稿</h2>
         <p class="page-sub">
-          上传植物照片、选择物种与位置，即可在地图上新增一个标记（{{ diskMode ? '数据保存到科大云盘' : '数据保存在本机浏览器中' }}）。
+          上传植物照片、选择物种与位置，即可在地图上新增一个标记；成片分布可以框选地块，让分布呈块状（{{ diskMode ? '数据保存到科大云盘' : '数据保存在本机浏览器中' }}）。
         </p>
       </div>
     </div>
@@ -49,9 +49,41 @@
         </div>
 
         <h3 class="sub-title"><span class="step-no">3</span>采集位置 <i class="req">*</i></h3>
-        <p class="tip muted">在地图上点一下即可选点，也可直接填写经纬度。</p>
-        <div ref="pickMapEl" class="pick-map"></div>
-        <div class="coord-row">
+        <div class="mode-switch" role="group" aria-label="分布形态">
+          <button
+            type="button"
+            :class="{ active: form.mode === 'point' }"
+            :aria-pressed="form.mode === 'point'"
+            @click="setMode('point')"
+          >
+            单点位置
+          </button>
+          <button
+            type="button"
+            :class="{ active: form.mode === 'area' }"
+            :aria-pressed="form.mode === 'area'"
+            @click="setMode('area')"
+          >
+            地块范围
+          </button>
+        </div>
+        <p class="tip muted">
+          <template v-if="form.mode === 'point'">
+            在地图上点一下即可选点；成片分布的植物可以切换到「地块范围」。
+          </template>
+          <template v-else>
+            用矩形拖动或多边形逐点描绘，圈出这片植物的实际分布范围；地图上会显示为块状。
+          </template>
+        </p>
+        <AreaPicker
+          :mode="form.mode"
+          :lat="form.lat"
+          :lng="form.lng"
+          :polygon="form.polygon"
+          height="clamp(220px, 38vh, 280px)"
+          @change="onAreaChange"
+        />
+        <div v-if="form.mode === 'point'" class="coord-row">
           <div class="field">
             <label>纬度 lat</label>
             <input v-model.number="form.lat" type="number" step="0.0001" placeholder="31.8395" />
@@ -62,6 +94,13 @@
           </div>
           <button type="button" class="btn" @click="useCampusCenter">用校园中心</button>
         </div>
+        <p v-else class="area-meta">
+          <template v-if="form.polygon.length >= 3">
+            已框选 <b>{{ formatArea(form.areaSize) }}</b>
+            · 中心坐标 {{ form.lat?.toFixed(5) }}, {{ form.lng?.toFixed(5) }}
+          </template>
+          <template v-else>还没有框选范围，请用地图上的「矩形框选」或「多边形框选」。</template>
+        </p>
 
         <div class="field">
           <label>备注</label>
@@ -92,9 +131,12 @@
             <img v-if="sub.image" :src="sub.image" alt="投稿" />
             <div v-else class="no-img">无图</div>
             <div class="sub-body">
-              <b>{{ sub.name }}</b>
+              <b>{{ sub.name }}<em v-if="isArea(sub)" class="badge">地块</em></b>
               <small class="muted">
-                {{ sub.lat?.toFixed(4) }}, {{ sub.lng?.toFixed(4) }}
+                <template v-if="isArea(sub)">
+                  地块 {{ areaTextOf(sub) }}
+                </template>
+                <template v-else>{{ sub.lat?.toFixed(4) }}, {{ sub.lng?.toFixed(4) }}</template>
                 <template v-if="sub.note"> · {{ sub.note }}</template>
               </small>
             </div>
@@ -140,8 +182,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import L from 'leaflet'
+import { reactive, ref } from 'vue'
 import { speciesList, getSpeciesById, campus } from '@/utils/species'
 import {
   addSubmission,
@@ -152,15 +193,14 @@ import {
 } from '@/utils/storage'
 import { downloadJSON, fileToResizedDataURL, readJSONFile } from '@/utils/image'
 import { getDiskStatus, uploadPhoto } from '@/utils/diskStore'
+import { formatArea, ringAreaM2 } from '@/utils/plots'
+import AreaPicker from '@/components/AreaPicker.vue'
 
 const disk = getDiskStatus()
 const diskMode = disk.available
 const diskDir = disk.dir
 
-const pickMapEl = ref(null)
 const importEl = ref(null)
-let pickMap = null
-let pickMarker = null
 
 const submissions = ref(loadSubmissions())
 const message = ref('')
@@ -168,13 +208,45 @@ const messageType = ref('ok')
 const saving = ref(false)
 
 const form = reactive({
+  mode: 'point',
   speciesId: '',
   name: '',
   lat: null,
   lng: null,
+  polygon: [],
+  areaSize: 0,
   note: '',
   image: ''
 })
+
+function isArea(item) {
+  return Array.isArray(item?.polygon) && item.polygon.length >= 3
+}
+
+function areaTextOf(item) {
+  if (!isArea(item)) return ''
+  const stored = Number(item.areaSize)
+  if (stored > 0) return formatArea(stored)
+  const ring = item.polygon
+    .filter((p) => Array.isArray(p) && p.length >= 2)
+    .map(([lng, lat]) => ({ lat: Number(lat), lng: Number(lng) }))
+  return formatArea(ringAreaM2(ring))
+}
+
+function setMode(mode) {
+  if (form.mode === mode) return
+  form.mode = mode
+  message.value = ''
+}
+
+function onAreaChange(payload) {
+  if (Array.isArray(payload.polygon)) {
+    form.polygon = payload.polygon
+    form.areaSize = Number(payload.areaSize) || 0
+  }
+  if ('lat' in payload) form.lat = payload.lat
+  if ('lng' in payload) form.lng = payload.lng
+}
 
 function flash(text, type = 'ok') {
   message.value = text
@@ -204,34 +276,20 @@ function onSpeciesChange() {
 function useCampusCenter() {
   form.lat = campus.center.lat
   form.lng = campus.center.lng
-  updatePickerMarker()
 }
-
-function updatePickerMarker() {
-  if (!pickMap || typeof form.lat !== 'number' || typeof form.lng !== 'number') return
-  const ll = [form.lat, form.lng]
-  if (pickMarker) {
-    pickMarker.setLatLng(ll)
-  } else {
-    pickMarker = L.marker(ll, {
-      icon: L.divIcon({
-        className: '',
-        html: '<div class="pin-dot" style="background:#e08e0b"></div>',
-        iconSize: [13, 13],
-        iconAnchor: [6.5, 6.5]
-      })
-    }).addTo(pickMap)
-  }
-  pickMap.panTo(ll)
-}
-
-watch(() => [form.lat, form.lng], updatePickerMarker)
 
 async function submit() {
   if (saving.value) return
   if (!form.name) return flash('请填写物种名称', 'err')
+
+  const isBlock = form.mode === 'area'
+  if (isBlock) {
+    if (!Array.isArray(form.polygon) || form.polygon.length < 3)
+      return flash('请在地图上框选地块范围', 'err')
+    if (!(Number(form.areaSize) > 0)) return flash('框选范围太小，请重新框选', 'err')
+  }
   if (typeof form.lat !== 'number' || typeof form.lng !== 'number')
-    return flash('请在图上选点或填写经纬度', 'err')
+    return flash(isBlock ? '地块中心坐标无效，请重新框选' : '请在图上选点或填写经纬度', 'err')
 
   saving.value = true
   try {
@@ -242,6 +300,8 @@ async function submit() {
       name: form.name,
       lat: Number(form.lat),
       lng: Number(form.lng),
+      polygon: isBlock ? form.polygon : [],
+      areaSize: isBlock ? Math.round(form.areaSize) : 0,
       note: form.note,
       image
     })
@@ -249,9 +309,9 @@ async function submit() {
     if (!record) return flash('保存失败：请确认数据服务已启动后重试', 'err')
 
     submissions.value = loadSubmissions()
-    flash('已保存，可到“分布地图”查看')
+    flash(isBlock ? '已保存地块，可到“分布地图”查看' : '已保存，可到“分布地图”查看')
 
-    // 保留物种选择，清空其余
+    // 保留物种与位置，清空其余
     form.note = ''
     form.image = ''
   } finally {
@@ -293,39 +353,6 @@ async function onImport(e) {
     e.target.value = ''
   }
 }
-
-onMounted(() => {
-  const b = campus.bounds
-  pickMap = L.map(pickMapEl.value, {
-    center: [campus.center.lat, campus.center.lng],
-    zoom: campus.zoom || 17,
-    minZoom: campus.minZoom || 17,
-    maxZoom: campus.maxZoom || 19,
-    maxBounds: b ? L.latLngBounds([b.south, b.west], [b.north, b.east]) : null,
-    maxBoundsViscosity: 1.0
-  })
-  L.tileLayer(
-    'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
-    {
-      subdomains: '1234',
-      maxZoom: campus.maxZoom || 19,
-      maxNativeZoom: 18,
-      attribution: '© 高德地图'
-    }
-  ).addTo(pickMap)
-
-  pickMap.on('click', (e) => {
-    form.lat = Number(e.latlng.lat.toFixed(5))
-    form.lng = Number(e.latlng.lng.toFixed(5))
-  })
-})
-
-onBeforeUnmount(() => {
-  if (pickMap) {
-    pickMap.remove()
-    pickMap = null
-  }
-})
 </script>
 
 <style scoped>
@@ -432,14 +459,61 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
 }
 
-.pick-map {
-  height: 280px;
-  border-radius: var(--radius);
+.mode-switch {
+  display: inline-flex;
+  gap: 2px;
+  margin-bottom: 10px;
+  padding: 3px;
   border: 1px solid var(--line);
-  overflow: hidden;
-  margin-bottom: 12px;
-  position: relative;
-  z-index: 1;
+  border-radius: 11px;
+  background: var(--green-050);
+}
+
+.mode-switch button {
+  padding: 6px 13px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.mode-switch button:hover {
+  color: var(--green-700);
+}
+
+.mode-switch button.active {
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  color: var(--green-700);
+}
+
+.area-meta {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid #efdfbd;
+  border-radius: 10px;
+  background: var(--amber-050);
+  color: #8a5a10;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.area-meta b {
+  font-weight: 700;
+}
+
+.badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--amber-050);
+  color: var(--amber);
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 600;
+  vertical-align: 1px;
 }
 
 .coord-row {
@@ -629,10 +703,46 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .form {
-    padding: 22px 18px 26px;
+    padding: 20px 14px 24px;
   }
+
   .side {
-    padding: 20px 18px;
+    padding: 18px 14px;
+  }
+
+  .uploader {
+    min-height: 170px;
+  }
+
+  .mode-switch {
+    display: flex;
+    width: 100%;
+  }
+
+  .mode-switch button {
+    flex: 1;
+    min-height: 40px;
+  }
+
+  .coord-row {
+    gap: 10px;
+  }
+
+  .coord-row .field {
+    min-width: 0;
+  }
+
+  .sub-list {
+    max-height: 360px;
+  }
+
+  .area-meta {
+    font-size: 12px;
+  }
+
+  .sub-item .del {
+    min-width: 36px;
+    min-height: 36px;
   }
 }
 </style>

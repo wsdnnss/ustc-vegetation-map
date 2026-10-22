@@ -216,24 +216,48 @@ function openSpecies(species) {
 }
 
 @media (max-width: 820px) {
+  /* 手机/平板上改为按行排列的网格，避免多列瀑布流“先滚完一列才到下一列” */
   .grid {
-    columns: 2 210px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    columns: auto;
+    gap: 18px;
+  }
+
+  .grid > * {
+    margin-bottom: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+    padding: 14px;
+    margin-bottom: 18px;
+  }
+
+  .toolbar .f.grow {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .toolbar .f select,
+  .toolbar .f input {
+    width: 100%;
+  }
+
+  .toolbar .btn {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-height: 42px;
   }
 }
 
 @media (max-width: 520px) {
   .grid {
-    columns: 2 150px;
-    column-gap: 14px;
-  }
-
-  .grid > * {
-    margin-bottom: 14px;
-  }
-
-  .toolbar {
-    gap: 12px;
-    padding: 16px;
+    gap: 14px;
   }
 }
 </style>

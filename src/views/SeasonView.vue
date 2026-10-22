@@ -488,8 +488,16 @@ watch([month, mode, onlyRecorded], () => {
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
+  /* 窄屏改为按行排列，避免瀑布流阅读顺序变成“先滚完一列” */
   .grid {
-    columns: 2 210px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    columns: auto;
+    gap: 18px;
+  }
+
+  .grid > * {
+    margin-bottom: 0;
   }
 }
 
@@ -512,12 +520,14 @@ watch([month, mode, onlyRecorded], () => {
   }
 
   .grid {
-    columns: 2 150px;
-    column-gap: 14px;
+    gap: 14px;
   }
+}
 
-  .grid > * {
-    margin-bottom: 14px;
+@media (max-width: 520px) {
+  /* 4 列 × 3 行，月份按钮更大更好点 */
+  .month-rail {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 </style>

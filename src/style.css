@@ -39,6 +39,8 @@
 
 html {
   scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 html,
@@ -77,6 +79,7 @@ img {
 button {
   font-family: inherit;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 input,
@@ -631,23 +634,55 @@ textarea {
 
 @media (max-width: 640px) {
   .app-main {
-    padding: 26px 16px 56px;
+    padding: 22px 14px 52px;
   }
 
   .page-head {
-    gap: 16px;
-    margin-bottom: 24px;
+    align-items: flex-start;
+    gap: 14px;
+    margin-bottom: 22px;
+  }
+
+  .page-head .stats {
+    width: 100%;
+  }
+
+  .page-title {
+    font-size: clamp(23px, 7vw, 28px);
   }
 
   .page-sub {
-    font-size: 13.5px;
+    margin-top: 8px;
+    font-size: 13px;
+    line-height: 1.7;
   }
 
   .stat {
-    padding: 7px 11px;
+    padding: 8px 11px;
+    font-size: 12px;
   }
 
   .stat b {
     font-size: 15px;
+  }
+
+  .card {
+    border-radius: 16px;
+  }
+
+  /* iOS Safari 在字号小于 16px 的输入框聚焦时会自动放大页面 */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .btn {
+    min-height: 42px;
+    padding: 10px 14px;
+  }
+
+  .empty-state {
+    padding: 44px 18px;
   }
 }

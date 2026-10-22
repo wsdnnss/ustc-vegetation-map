@@ -1,5 +1,5 @@
 ﻿<template>
-  <div class="area-picker">
+  <div class="area-picker" :class="{ 'is-drawing': !!drawMode }">
     <div ref="mapEl" class="area-map" :style="{ height }"></div>
 
     <div v-if="mode === 'area'" class="picker-tools" role="toolbar" aria-label="地块框选工具">
@@ -78,7 +78,12 @@ let draftShape = null
 let draftMarkers = []
 let draftCursor = null
 let rectDrag = null
+let dragFrame = 0
+let dragListenersOn = false
 let noticeTimer = null
+/** 触摸移动超过该距离才认为在框选，用于过滤握持误触 */
+const DRAG_COMMIT_PX = 6
+let dragCommitted = false
 
 const polygonRing = computed(() => pairsToRing(props.polygon))
 const hasPolygon = computed(() => polygonRing.value.length >= 3)
@@ -152,6 +157,35 @@ function clampLatLng(latlng) {
     Math.min(b.north, Math.max(b.south, latlng.lat)),
     Math.min(b.east, Math.max(b.west, latlng.lng))
   )
+}
+
+/** 小地图容器有圆角且被裁剪，手指常压在边缘甚至外面；允许外扩这么多像素起框 */
+const AREA_EDGE_TOLERANCE = 20
+
+/** 把事件坐标收敛到小地图容器内；返回 null 表示不在框选范围内 */
+function mapPointFromEvent(e) {
+  const el = mapEl.value
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  if (!r.width || !r.height) return null
+  if (
+    e.clientX < r.left - AREA_EDGE_TOLERANCE ||
+    e.clientX > r.right + AREA_EDGE_TOLERANCE ||
+    e.clientY < r.top - AREA_EDGE_TOLERANCE ||
+    e.clientY > r.bottom + AREA_EDGE_TOLERANCE
+  ) {
+    return null
+  }
+  return {
+    x: Math.min(r.right - 1, Math.max(r.left + 1, e.clientX)),
+    y: Math.min(r.bottom - 1, Math.max(r.top + 1, e.clientY))
+  }
+}
+
+function latLngFromEvent(e) {
+  const p = mapPointFromEvent(e)
+  if (!p) return null
+  return clampLatLng(map.mouseEventToLatLng({ clientX: p.x, clientY: p.y }))
 }
 
 function orangeDotIcon() {
@@ -291,24 +325,34 @@ function toggleDraw(mode) {
     cancelDraw()
     return
   }
+  // 没有 Pointer Events 的旧浏览器退化为多边形点击
+  if (mode === 'rect' && !('PointerEvent' in window)) {
+    mode = 'poly'
+    setNotice('当前浏览器不支持拖拽，已切换为多边形框选')
+  }
   cancelDraw()
   drawMode.value = mode
   if (mode === 'rect') map.dragging.disable()
   if (mode === 'poly') map.doubleClickZoom.disable()
+  map.touchZoom?.disable()
   mapEl.value?.classList.add('is-drawing')
   syncPolygon()
-  setNotice(mode === 'rect' ? '按住鼠标拖动，框出地块范围' : '沿地块边界依次点击')
+  setNotice(mode === 'rect' ? '按住拖动，框出地块范围' : '沿地块边界依次点击')
 }
 
 function cancelDraw() {
   drawMode.value = ''
   rectDrag = null
+  dragCommitted = false
+  cancelDragFrame()
+  endDragListeners()
   removePreviewRect()
   clearDraft()
   live.value = null
   if (map) {
     map.dragging.enable()
     map.doubleClickZoom.enable()
+    map.touchZoom?.enable()
   }
   mapEl.value?.classList.remove('is-drawing')
   syncPolygon()
@@ -442,85 +486,146 @@ function undoDraft() {
   updateDraftShape()
 }
 
-function onPointerDown(e) {
-  if (drawMode.value !== 'rect' || !map) return
-  if (e.target?.closest?.('.leaflet-control')) return
-  if (e.pointerType === 'mouse' && e.button !== 0) return
-  e.preventDefault()
-  e.stopPropagation()
+const DRAG_EVENT_OPTS = { capture: false, passive: false }
 
-  const start = clampLatLng(map.mouseEventToLatLng(e))
-  rectDrag = { pointerId: e.pointerId, start, moved: false }
-  try {
-    mapEl.value?.setPointerCapture?.(e.pointerId)
-  } catch (err) {
-    /* 忽略 */
+function ringOfBounds(bounds) {
+  return [
+    { lat: bounds.getSouth(), lng: bounds.getWest() },
+    { lat: bounds.getSouth(), lng: bounds.getEast() },
+    { lat: bounds.getNorth(), lng: bounds.getEast() },
+    { lat: bounds.getNorth(), lng: bounds.getWest() }
+  ]
+}
+
+function beginDragListeners() {
+  if (dragListenersOn) return
+  dragListenersOn = true
+  // 挂到 window：手指移出小地图或页面边缘时仍能收到 move/up
+  window.addEventListener('pointermove', onPointerMove, DRAG_EVENT_OPTS)
+  window.addEventListener('pointerup', onPointerUp, DRAG_EVENT_OPTS)
+  window.addEventListener('pointercancel', onPointerCancel, DRAG_EVENT_OPTS)
+}
+
+function endDragListeners() {
+  if (!dragListenersOn) return
+  dragListenersOn = false
+  window.removeEventListener('pointermove', onPointerMove, DRAG_EVENT_OPTS)
+  window.removeEventListener('pointerup', onPointerUp, DRAG_EVENT_OPTS)
+  window.removeEventListener('pointercancel', onPointerCancel, DRAG_EVENT_OPTS)
+}
+
+function cancelDragFrame() {
+  if (dragFrame) {
+    window.cancelAnimationFrame(dragFrame)
+    dragFrame = 0
   }
+}
+
+function ensurePreviewRect(start) {
+  if (!map) return
   if (!previewRect) {
     previewRect = L.rectangle(L.latLngBounds(start, start), {
       color: '#b06f0c',
-      weight: 2,
+      weight: 2.5,
       dashArray: '6 5',
       fillColor: '#e08e0b',
       fillOpacity: 0.14,
       interactive: false
     }).addTo(map)
+  } else {
+    previewRect.setBounds(L.latLngBounds(start, start))
   }
+}
+
+function onPointerDown(e) {
+  if (drawMode.value !== 'rect' || !map) return
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  // 按在已框选的手柄上：交给 Leaflet 的 marker 拖动做微调
+  if (e.target?.closest?.('.area-handle-wrap, .plot-handle-wrap')) return
+  // 工具栏按钮、提示与版权链接不参与起框
+  if (e.target?.closest?.('button, a, input, select, textarea, .picker-tools, .picker-hint')) return
+
+  const hit = latLngFromEvent(e)
+  if (!hit) return
+
+  if (rectDrag) {
+    // 未开始移动的手指多半是握持误触，把起点让给新落下的手指；已拖动则忽略后续手指
+    if (dragCommitted || rectDrag.pointerId === e.pointerId) return
+    e.preventDefault()
+    e.stopPropagation()
+    rectDrag = { pointerId: e.pointerId, start: hit, current: hit }
+    ensurePreviewRect(hit)
+    return
+  }
+
+  e.preventDefault()
+  e.stopPropagation()
+
+  rectDrag = { pointerId: e.pointerId, start: hit, current: hit }
+  dragCommitted = false
+  beginDragListeners()
+  try {
+    mapEl.value?.setPointerCapture?.(e.pointerId)
+  } catch (err) {
+    /* 指针捕获失败时由 window 监听兜底 */
+  }
+  ensurePreviewRect(hit)
+}
+
+/** rAF 合并高频移动，低端手机拖动更顺滑 */
+function scheduleDragUpdate() {
+  if (dragFrame) return
+  dragFrame = window.requestAnimationFrame(() => {
+    dragFrame = 0
+    if (!rectDrag || !map) return
+    const { start, current } = rectDrag
+    const startPt = map.latLngToContainerPoint(start)
+    const curPt = map.latLngToContainerPoint(current)
+    if (Math.abs(startPt.x - curPt.x) < 3 && Math.abs(startPt.y - curPt.y) < 3) return
+
+    const bounds = L.latLngBounds(start, current)
+    previewRect?.setBounds(bounds)
+    const ring = ringOfBounds(bounds)
+    const width = mapEl.value?.clientWidth || 0
+    live.value = {
+      x: Math.min(Math.max(curPt.x, 80), Math.max(80, width - 80)),
+      y: Math.max(22, curPt.y - 12),
+      text: `${formatArea(ringAreaM2(ring))} · 松手完成`
+    }
+  })
 }
 
 function onPointerMove(e) {
   if (!rectDrag || drawMode.value !== 'rect' || !map) return
+  if (e.pointerId != null && e.pointerId !== rectDrag.pointerId) return
+  // 手指滑出小地图边缘时贴边继续框选
+  const hit = latLngFromEvent(e)
+  if (!hit) return
   e.preventDefault()
   e.stopPropagation()
-
-  const startPt = map.latLngToContainerPoint(rectDrag.start)
-  const current = clampLatLng(map.mouseEventToLatLng(e))
-  const curPt = map.latLngToContainerPoint(current)
-  if (Math.abs(startPt.x - curPt.x) < 3 && Math.abs(startPt.y - curPt.y) < 3) return
-
-  rectDrag.moved = true
-  const bounds = L.latLngBounds(rectDrag.start, current)
-  previewRect?.setBounds(bounds)
-  const ring = [
-    { lat: bounds.getSouth(), lng: bounds.getWest() },
-    { lat: bounds.getSouth(), lng: bounds.getEast() },
-    { lat: bounds.getNorth(), lng: bounds.getEast() },
-    { lat: bounds.getNorth(), lng: bounds.getWest() }
-  ]
-  const width = mapEl.value?.clientWidth || 0
-  live.value = {
-    x: Math.min(Math.max(curPt.x, 80), Math.max(80, width - 80)),
-    y: Math.max(22, curPt.y - 12),
-    text: `${formatArea(ringAreaM2(ring))} · 松手完成`
+  rectDrag.current = hit
+  if (!dragCommitted) {
+    const a = map.latLngToContainerPoint(rectDrag.start)
+    const b = map.latLngToContainerPoint(hit)
+    // 轻微抖动不算框选，避免握持误触生成一个极小地块
+    if (Math.abs(a.x - b.x) < DRAG_COMMIT_PX && Math.abs(a.y - b.y) < DRAG_COMMIT_PX) return
+    dragCommitted = true
   }
+  scheduleDragUpdate()
 }
 
-function onPointerUp(e) {
-  if (!rectDrag || !map) return
-  e.preventDefault()
-  e.stopPropagation()
-  const drag = rectDrag
-  rectDrag = null
-  try {
-    mapEl.value?.releasePointerCapture?.(drag.pointerId)
-  } catch (err) {
-    /* 忽略 */
-  }
-  live.value = null
-
-  if (!drag.moved || !previewRect) {
-    removePreviewRect()
-    setNotice('按住并拖动鼠标来框选地块')
+/** 以起止两角生成地块范围；up 与 cancel 共用 */
+function commitRectDrag(start, end) {
+  removePreviewRect()
+  const startPt = map.latLngToContainerPoint(start)
+  const endPt = map.latLngToContainerPoint(end)
+  if (Math.abs(startPt.x - endPt.x) < 3 && Math.abs(startPt.y - endPt.y) < 3) {
+    setNotice('按住并拖动来框选地块')
     return
   }
-  const bounds = previewRect.getBounds()
-  removePreviewRect()
-  const ring = [
-    { lat: bounds.getSouth(), lng: bounds.getWest() },
-    { lat: bounds.getSouth(), lng: bounds.getEast() },
-    { lat: bounds.getNorth(), lng: bounds.getEast() },
-    { lat: bounds.getNorth(), lng: bounds.getWest() }
-  ]
+
+  const bounds = L.latLngBounds(start, end)
+  const ring = ringOfBounds(bounds)
   if (ringAreaM2(ring) < 8) {
     setNotice('框选范围太小，请重新拖动')
     return
@@ -530,8 +635,33 @@ function onPointerUp(e) {
   emitRing(ring)
 }
 
+function onPointerUp(e) {
+  if (!rectDrag || !map) return
+  if (e.pointerId != null && e.pointerId !== rectDrag.pointerId) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  const drag = rectDrag
+  rectDrag = null
+  dragCommitted = false
+  cancelDragFrame()
+  endDragListeners()
+  try {
+    mapEl.value?.releasePointerCapture?.(drag.pointerId)
+  } catch (err) {
+    /* 忽略 */
+  }
+  live.value = null
+
+  // 以抬起点为准，快速滑动时最后一次 move 可能还没到
+  const end = latLngFromEvent(e) || drag.current
+  commitRectDrag(drag.start, end)
+}
+
+/** 触屏手势被系统打断（如手指滑出小地图边界）时，已拖出有效范围就按最后位置完成 */
 function onPointerCancel(e) {
   if (!rectDrag) return
+  if (e.pointerId != null && e.pointerId !== rectDrag.pointerId) return
   e.preventDefault?.()
   e.stopPropagation?.()
   try {
@@ -539,9 +669,22 @@ function onPointerCancel(e) {
   } catch (err) {
     /* 忽略 */
   }
+
+  const drag = rectDrag
   rectDrag = null
-  removePreviewRect()
+  const committed = dragCommitted
+  dragCommitted = false
+  cancelDragFrame()
+  endDragListeners()
   live.value = null
+
+  if (committed) commitRectDrag(drag.start, drag.current)
+  else removePreviewRect()
+}
+
+/** 绘制时屏蔽长按菜单 */
+function onContextMenu(e) {
+  if (drawMode.value) e.preventDefault()
 }
 
 function clearPolygon() {
@@ -612,10 +755,9 @@ onMounted(() => {
   map.on('click', onMapClick)
   map.on('dblclick', onMapDblClick)
   map.on('mousemove', onMapMove)
-  mapEl.value?.addEventListener('pointerdown', onPointerDown, true)
-  mapEl.value?.addEventListener('pointermove', onPointerMove, true)
-  mapEl.value?.addEventListener('pointerup', onPointerUp, true)
-  mapEl.value?.addEventListener('pointercancel', onPointerCancel, true)
+  // 挂 window：小地图圆角/边缘之外 20px 也能起框
+  window.addEventListener('pointerdown', onPointerDown, { capture: true, passive: false })
+  mapEl.value?.addEventListener('contextmenu', onContextMenu)
   window.addEventListener('keydown', onKeydown)
 
   syncPolygon()
@@ -637,11 +779,12 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (noticeTimer) window.clearTimeout(noticeTimer)
   window.removeEventListener('keydown', onKeydown)
+  cancelDragFrame()
+  endDragListeners()
   const el = mapEl.value
   el?.removeEventListener('pointerdown', onPointerDown, true)
-  el?.removeEventListener('pointermove', onPointerMove, true)
-  el?.removeEventListener('pointerup', onPointerUp, true)
-  el?.removeEventListener('pointercancel', onPointerCancel, true)
+  window.removeEventListener('pointerdown', onPointerDown, true)
+  el?.removeEventListener('contextmenu', onContextMenu)
   if (map) {
     map.remove()
     map = null
@@ -655,6 +798,11 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 
+/* 圆角处的触摸会命中外层，外层同样锁定才不会被页面滚动打断 */
+.area-picker.is-drawing {
+  touch-action: none;
+}
+
 .area-map {
   position: relative;
   z-index: 1;
@@ -666,6 +814,15 @@ onBeforeUnmount(() => {
 
 .area-map.is-drawing {
   cursor: crosshair;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* 框选时缩放控件不参与命中，小地图四角也能正常起框 */
+.area-map.is-drawing :deep(.leaflet-top) {
+  pointer-events: none;
 }
 
 .picker-tools {

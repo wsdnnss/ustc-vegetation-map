@@ -309,7 +309,12 @@ const plotForm = reactive({ plotId: '', name: '', landuse: '草坪', color: '#AE
 
 let toastTimer = null
 let rectDrag = null
+let dragFrame = 0
+let dragListenersOn = false
 let previewRect = null
+/** 触摸移动超过该距离才认为用户在框选，用于过滤握持误触 */
+const DRAG_COMMIT_PX = 6
+let dragCommitted = false
 let selectionPolygon = null
 let vertexMarkers = []
 let draftShape = null
@@ -717,6 +722,11 @@ function startSelection(mode) {
     stopSelection()
     return
   }
+  // 极旧的内置浏览器没有 Pointer Events，退化为多边形点击（Leaflet 点击仍可用）
+  if (mode === 'rect' && !('PointerEvent' in window)) {
+    mode = 'poly'
+    setToast('当前浏览器不支持拖拽框选，已切换为多边形框选', 'warn')
+  }
   cancelDraft()
   removePreviewRect()
   liveBadge.value = null
@@ -729,6 +739,9 @@ function startSelection(mode) {
 function stopSelection() {
   selectMode.value = ''
   rectDrag = null
+  dragCommitted = false
+  cancelDragFrame()
+  endDragListeners()
   removePreviewRect()
   liveBadge.value = null
   cancelDraft()
@@ -901,88 +914,193 @@ function finishPolygon() {
   setToast(a ? `已框选 ${formatArea(a.area)}，可拖动圆点微调` : '框选完成')
 }
 
-/* ── 矩形框选：指针拖拽 ─────────────────────────────────── */
+/* ── 矩形框选：指针拖拽（触摸 + 鼠标） ─────────────────── */
 
-function onMapPointerDown(e) {
-  if (selectMode.value !== 'rect' || !map) return
-  if (e.target?.closest?.('.leaflet-control')) return
-  if (e.pointerType === 'mouse' && e.button !== 0) return
-  e.preventDefault()
-  e.stopPropagation()
+const DRAG_EVENT_OPTS = { capture: false, passive: false }
 
-  const start = clampDisplayLatLng(map.mouseEventToLatLng(e))
-  rectDrag = { pointerId: e.pointerId, start, moved: false }
-  try {
-    mapEl.value?.setPointerCapture?.(e.pointerId)
-  } catch (err) {
-    /* 忽略指针捕获失败 */
+function beginDragListeners() {
+  if (dragListenersOn) return
+  dragListenersOn = true
+  // 监听 window 而非地图容器：手指滑出地图或页面边缘时仍能收到 move/up
+  window.addEventListener('pointermove', onMapPointerMove, DRAG_EVENT_OPTS)
+  window.addEventListener('pointerup', onMapPointerUp, DRAG_EVENT_OPTS)
+  window.addEventListener('pointercancel', onMapPointerCancel, DRAG_EVENT_OPTS)
+}
+
+function endDragListeners() {
+  if (!dragListenersOn) return
+  dragListenersOn = false
+  window.removeEventListener('pointermove', onMapPointerMove, DRAG_EVENT_OPTS)
+  window.removeEventListener('pointerup', onMapPointerUp, DRAG_EVENT_OPTS)
+  window.removeEventListener('pointercancel', onMapPointerCancel, DRAG_EVENT_OPTS)
+}
+
+function cancelDragFrame() {
+  if (dragFrame) {
+    window.cancelAnimationFrame(dragFrame)
+    dragFrame = 0
   }
-  if (!previewRect && drawLayer) {
+}
+
+function ensurePreviewRect(start) {
+  if (!drawLayer) return
+  if (!previewRect) {
     previewRect = L.rectangle(L.latLngBounds(start, start), {
       color: '#1f6b4a',
-      weight: 2,
+      weight: 2.5,
       dashArray: '6 5',
       fillColor: '#3d9d73',
       fillOpacity: 0.12,
       interactive: false
     }).addTo(drawLayer)
+  } else {
+    previewRect.setBounds(L.latLngBounds(start, start))
   }
+}
+
+/** 按在已框选的四角圆点上：交给 Leaflet 的 marker 拖动做微调，不当作新框选 */
+function isHandleTarget(target) {
+  return !!target?.closest?.('.plot-handle-wrap, .area-handle-wrap')
+}
+
+/** 地图容器有圆角且被裁剪，手指常压在容器边缘甚至外面；允许外扩这么多像素起框 */
+const MAP_EDGE_TOLERANCE = 24
+
+/**
+ * 把事件坐标收敛到地图容器内。
+ * 返回 null 表示这次按下不在框选范围内，交给页面其他交互处理。
+ */
+function mapPointFromEvent(e) {
+  const el = mapEl.value
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  if (!r.width || !r.height) return null
+  if (
+    e.clientX < r.left - MAP_EDGE_TOLERANCE ||
+    e.clientX > r.right + MAP_EDGE_TOLERANCE ||
+    e.clientY < r.top - MAP_EDGE_TOLERANCE ||
+    e.clientY > r.bottom + MAP_EDGE_TOLERANCE
+  ) {
+    return null
+  }
+  return {
+    x: Math.min(r.right - 1, Math.max(r.left + 1, e.clientX)),
+    y: Math.min(r.bottom - 1, Math.max(r.top + 1, e.clientY))
+  }
+}
+
+/** 事件坐标 → 数据坐标（已限制在校园范围内） */
+function latLngFromEvent(e) {
+  const p = mapPointFromEvent(e)
+  if (!p) return null
+  return clampDisplayLatLng(map.mouseEventToLatLng({ clientX: p.x, clientY: p.y }))
+}
+
+function onMapPointerDown(e) {
+  if (selectMode.value !== 'rect' || !map) return
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  if (isHandleTarget(e.target)) return
+  // 工具栏按钮、面板与地图浮层不参与起框（框选模式下缩放/图层已被 CSS 屏蔽）
+  if (
+    e.target?.closest?.(
+      'button, a, input, select, textarea, .map-tools, .map-toast, .select-hint, .plot-panel, .live-badge'
+    )
+  ) {
+    return
+  }
+
+  const hit = latLngFromEvent(e)
+  if (!hit) return
+
+  if (rectDrag) {
+    // 已有手指按着：若它还没开始移动，说明多半是握持时的误触（拇指根部/掌根），
+    // 把起点让给新落下的这根手指；已经开始拖了则忽略后续手指，避免起点被覆盖
+    if (dragCommitted || rectDrag.pointerId === e.pointerId) return
+    e.preventDefault()
+    e.stopPropagation()
+    rectDrag = { pointerId: e.pointerId, start: hit, current: hit }
+    ensurePreviewRect(hit)
+    return
+  }
+
+  e.preventDefault()
+  e.stopPropagation()
+
+  rectDrag = { pointerId: e.pointerId, start: hit, current: hit }
+  dragCommitted = false
+  beginDragListeners()
+  try {
+    mapEl.value?.setPointerCapture?.(e.pointerId)
+  } catch (err) {
+    /* iOS/旧版 WebView 可能拒绝指针捕获，window 监听已兜底 */
+  }
+  ensurePreviewRect(hit)
+}
+
+/** 用 rAF 合并高频 pointermove，低端手机上拖动更顺滑 */
+function scheduleDragUpdate() {
+  if (dragFrame) return
+  dragFrame = window.requestAnimationFrame(() => {
+    dragFrame = 0
+    if (!rectDrag || !map) return
+    const { start, current } = rectDrag
+    const startPt = map.latLngToContainerPoint(start)
+    const curPt = map.latLngToContainerPoint(current)
+    if (Math.abs(startPt.x - curPt.x) < 3 && Math.abs(startPt.y - curPt.y) < 3) return
+
+    const bounds = L.latLngBounds(start, current)
+    previewRect?.setBounds(bounds)
+
+    const ring = ringFromBounds({
+      south: bounds.getSouth(),
+      west: bounds.getWest(),
+      north: bounds.getNorth(),
+      east: bounds.getEast()
+    })
+    const live = analyzeSelection(
+      ring.map((p) => toDataLatLng(p.lat, p.lng)),
+      mapPoints.value,
+      visibleIds.value
+    )
+    const width = mapEl.value?.clientWidth || 0
+    liveBadge.value = {
+      x: Math.min(Math.max(curPt.x, 84), Math.max(84, width - 84)),
+      y: Math.max(26, curPt.y - 12),
+      text: `${formatArea(live.area)} · ${live.count} 个点 · ${live.speciesCount} 种`
+    }
+  })
 }
 
 function onMapPointerMove(e) {
   if (!rectDrag || selectMode.value !== 'rect' || !map) return
+  if (e.pointerId != null && e.pointerId !== rectDrag.pointerId) return
+  // 手指滑出地图边缘时贴边继续框选，而不是中断
+  const hit = latLngFromEvent(e)
+  if (!hit) return
   e.preventDefault()
   e.stopPropagation()
-
-  const startPt = map.latLngToContainerPoint(rectDrag.start)
-  const current = clampDisplayLatLng(map.mouseEventToLatLng(e))
-  const curPt = map.latLngToContainerPoint(current)
-  if (Math.abs(startPt.x - curPt.x) < 3 && Math.abs(startPt.y - curPt.y) < 3) return
-
-  rectDrag.moved = true
-  const bounds = L.latLngBounds(rectDrag.start, current)
-  previewRect?.setBounds(bounds)
-
-  const ring = ringFromBounds({
-    south: bounds.getSouth(),
-    west: bounds.getWest(),
-    north: bounds.getNorth(),
-    east: bounds.getEast()
-  })
-  const live = analyzeSelection(
-    ring.map((p) => toDataLatLng(p.lat, p.lng)),
-    mapPoints.value,
-    visibleIds.value
-  )
-  const width = mapEl.value?.clientWidth || 0
-  liveBadge.value = {
-    x: Math.min(Math.max(curPt.x, 84), Math.max(84, width - 84)),
-    y: Math.max(26, curPt.y - 12),
-    text: `${formatArea(live.area)} · ${live.count} 个点 · ${live.speciesCount} 种`
+  rectDrag.current = hit
+  if (!dragCommitted) {
+    const a = map.latLngToContainerPoint(rectDrag.start)
+    const b = map.latLngToContainerPoint(hit)
+    // 轻微抖动不算框选，避免握持误触直接生成一个零点几平米的选区
+    if (Math.abs(a.x - b.x) < DRAG_COMMIT_PX && Math.abs(a.y - b.y) < DRAG_COMMIT_PX) return
+    dragCommitted = true
   }
+  scheduleDragUpdate()
 }
 
-function onMapPointerUp(e) {
-  if (!rectDrag || !map) return
-  e.preventDefault()
-  e.stopPropagation()
-  const drag = rectDrag
-  rectDrag = null
-  try {
-    mapEl.value?.releasePointerCapture?.(drag.pointerId)
-  } catch (err) {
-    /* 忽略 */
-  }
-  liveBadge.value = null
-
-  if (!drag.moved || !previewRect) {
-    removePreviewRect()
-    setToast('按住并拖动鼠标来框选区域', 'warn')
+/** 以起止两角生成矩形选区；up 与 cancel 共用 */
+function commitRectDrag(start, end) {
+  removePreviewRect()
+  const startPt = map.latLngToContainerPoint(start)
+  const endPt = map.latLngToContainerPoint(end)
+  if (Math.abs(startPt.x - endPt.x) < 3 && Math.abs(startPt.y - endPt.y) < 3) {
+    setToast('按住并拖动来框选区域', 'warn')
     return
   }
 
-  const bounds = previewRect.getBounds()
-  removePreviewRect()
+  const bounds = L.latLngBounds(start, end)
   const ring = ringFromBounds({
     south: bounds.getSouth(),
     west: bounds.getWest(),
@@ -999,9 +1117,33 @@ function onMapPointerUp(e) {
   setToast(`已框选 ${formatArea(area)}，可拖动四角圆点微调`)
 }
 
-/** 触屏手势被系统打断时放弃本次框选，避免提交意外范围 */
+function onMapPointerUp(e) {
+  if (!rectDrag || !map) return
+  if (e.pointerId != null && e.pointerId !== rectDrag.pointerId) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  const drag = rectDrag
+  rectDrag = null
+  dragCommitted = false
+  cancelDragFrame()
+  endDragListeners()
+  try {
+    mapEl.value?.releasePointerCapture?.(drag.pointerId)
+  } catch (err) {
+    /* 忽略 */
+  }
+  liveBadge.value = null
+
+  // 快速滑动时 pointerup 可能早于最后一次 pointermove，直接用抬起点重算
+  const end = latLngFromEvent(e) || drag.current
+  commitRectDrag(drag.start, end)
+}
+
+/** 触屏手势被系统打断时：已拖出有效范围就按最后位置完成，避免整次框选凭空消失 */
 function onMapPointerCancel(e) {
   if (!rectDrag) return
+  if (e.pointerId != null && e.pointerId !== rectDrag.pointerId) return
   e.preventDefault?.()
   e.stopPropagation?.()
   try {
@@ -1009,9 +1151,22 @@ function onMapPointerCancel(e) {
   } catch (err) {
     /* 忽略 */
   }
+
+  const drag = rectDrag
   rectDrag = null
-  removePreviewRect()
+  const committed = dragCommitted
+  dragCommitted = false
+  cancelDragFrame()
+  endDragListeners()
   liveBadge.value = null
+
+  if (committed) commitRectDrag(drag.start, drag.current)
+  else removePreviewRect()
+}
+
+/** 框选时屏蔽长按菜单，避免触发系统菜单打断拖动 */
+function onMapContextMenu(e) {
+  if (selectMode.value) e.preventDefault()
 }
 
 /* ── 选区：渲染、顶点微调与智能推荐 ─────────────────────── */
@@ -1528,12 +1683,11 @@ onMounted(() => {
   renderMarkers()
   renderPlots()
 
-  // 矩形框选用指针事件（鼠标/触屏通用），捕获阶段拦截，避免与地图拖动冲突
+  // 矩形框选：pointerdown 挂在 window，容器圆角/边缘之外 24px 也能起框；
+  // move/up 在拖拽开始时也挂到 window，手指滑出地图仍能继续
   const el = mapEl.value
-  el?.addEventListener('pointerdown', onMapPointerDown, true)
-  el?.addEventListener('pointermove', onMapPointerMove, true)
-  el?.addEventListener('pointerup', onMapPointerUp, true)
-  el?.addEventListener('pointercancel', onMapPointerCancel, true)
+  window.addEventListener('pointerdown', onMapPointerDown, { capture: true, passive: false })
+  el?.addEventListener('contextmenu', onMapContextMenu)
   window.addEventListener('keydown', onKeydown)
 
   map.on('zoomend', syncZoomMode)
@@ -1563,14 +1717,18 @@ watch(panelOpen, () => {
   nextTick(() => map?.invalidateSize())
 })
 
-// 框选模式下锁定地图拖动 / 双击缩放，退出后恢复
+// 框选模式下锁定地图拖动 / 触摸缩放 / 双击缩放，退出后恢复
 watch(selectMode, (mode) => {
   if (!map) return
   const el = mapEl.value
   el?.classList.toggle('is-framing', mode === 'rect')
   el?.classList.toggle('is-polygon', mode === 'poly')
+  // 圆角裁剪后容器角落的触摸会落到外层，外层也要锁定 touch-action 才不会被页面滚动打断
+  el?.closest('.map-layout')?.classList.toggle('is-framing', mode === 'rect')
   if (mode === 'rect') map.dragging.disable()
   else map.dragging.enable()
+  if (mode) map.touchZoom?.disable()
+  else map.touchZoom?.enable()
   if (mode === 'poly') map.doubleClickZoom.disable()
   else map.doubleClickZoom.enable()
   if (!mode) {
@@ -1591,11 +1749,12 @@ onBeforeUnmount(() => {
     window.clearTimeout(toastTimer)
     toastTimer = null
   }
+  cancelDragFrame()
+  endDragListeners()
   const el = mapEl.value
   el?.removeEventListener('pointerdown', onMapPointerDown, true)
-  el?.removeEventListener('pointermove', onMapPointerMove, true)
-  el?.removeEventListener('pointerup', onMapPointerUp, true)
-  el?.removeEventListener('pointercancel', onMapPointerCancel, true)
+  window.removeEventListener('pointerdown', onMapPointerDown, true)
+  el?.removeEventListener('contextmenu', onMapContextMenu)
   window.removeEventListener('keydown', onKeydown)
   if (map) {
     map.remove()
@@ -1698,6 +1857,22 @@ onBeforeUnmount(() => {
 .map.is-framing,
 .map.is-polygon {
   cursor: crosshair;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* 框选时缩放/图层/比例尺不参与命中，四角与边缘区域也能正常起框；
+   版权信息保留可点击，保持合规 */
+.map.is-framing :deep(.leaflet-top),
+.map.is-framing :deep(.leaflet-bottom.leaflet-left) {
+  pointer-events: none;
+}
+
+/* 容器圆角处的触摸会命中外层，外层同样锁定才不会被页面滚动打断 */
+.map-layout.is-framing {
+  touch-action: none;
 }
 
 /* ── 手动框选：入口与地图浮层 ─────────────────────────────── */

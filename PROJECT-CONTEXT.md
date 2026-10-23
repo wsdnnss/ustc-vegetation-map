@@ -31,8 +31,11 @@
 ```json
 "dependencies": {
   "leaflet": "^1.9.4",
+  "leaflet.markercluster": "^1.5.3",
+  "onnxruntime-web": "1.22.0",
   "vue": "^3.5.13",
-  "vue-router": "^4.5.0"
+  "vue-router": "^4.5.0",
+  "xlsx": "^0.18.5"
 },
 "devDependencies": {
   "@vitejs/plugin-vue": "^5.2.1",
@@ -57,6 +60,8 @@ E:\ustc-vegetation-map\
 ├─ server/store.js              云盘 JSON 按条读写（Vite 中间件与 server.mjs 共用）
 ├─ scripts/validate-data.mjs    物种数据校验
 ├─ scripts/merge-exports.mjs    合并多人导出的投稿 JSON
+├─ scripts/copy-ort.mjs         构建/开发前复制 onnxruntime-web 的 wasm 运行时到 public/ort（该目录已 gitignore）
+├─ public/models/plant/         本地识别模型 inat21-resnet50-int8.onnx（约 43 MB）+ inat21-plants.json（4271 个植物类别）
 ├─ tests/                       Vitest 单元测试（coord / table / species）
 ├─ vitest.config.js
 ├─ README.md                    面向使用者的使用指南
@@ -75,12 +80,14 @@ E:\ustc-vegetation-map\
    │  ├─ SearchSuggest.vue                 搜索联想
    │  ├─ AreaPicker.vue                    投稿页选点 / 地块框选小地图
    │  ├─ PlotPanel.vue                     框选结果与地块管理面板
+   │  ├─ PhotoIdentify.vue                  照片本地识别按钮与候选列表（投稿页 / 识树页共用）
    │  └─ SpeciesCard.vue                   物种卡片（待核实 / 示例坐标徽章）
    ├─ views/
    │  ├─ MapView.vue                       分布地图（主页面）
    │  ├─ SpeciesListView.vue               物种库（229 种 + 5 个筛选器）
    │  ├─ SpeciesDetailView.vue             物种详情（含数据分级提示 / 迷你地图）
-   │  ├─ UploadView.vue                    上传投稿（照片 + 选点 + 导出/导入 JSON）
+   │  ├─ IdentifyView.vue                  拍照识树（选图 → 本地识别 → 带入投稿）
+   │  ├─ UploadView.vue                    上传投稿（照片 + 可选本地识别 + 选点 + 导出/导入 JSON）
    │  ├─ BatchImportView.vue               批量导入（CSV / Excel + 批量照片）
    │  └─ AboutView.vue                     关于与使用说明
    ├─ data/species.json                    ★ 全站数据源
@@ -91,6 +98,8 @@ E:\ustc-vegetation-map\
       ├─ storage.js                        投稿读写（按条调用数据服务）
       ├─ community.js                      社区帖子读写
       ├─ diskStore.js                      数据服务客户端 / 缓存 / 历史数据迁移
+      ├─ identify.js                       识别候选 → 物种库匹配、置信度分级（纯函数，已覆盖单测）
+      ├─ recognition.js                    ONNX Runtime Web 加载、IndexedDB 模型缓存、图片预处理与推理
       ├─ image.js                          图片压缩 + 占位图 URL
       └─ table.js                          表格解析（CSV / xlsx）+ 模板下载
 ```
@@ -185,7 +194,8 @@ E:\ustc-vegetation-map\
 | `/#/species` | 物种库 | 229 种（已记录 20 / 待核实 209）；**搜索（中文名/学名/别名/识别特征）+ 科 + 花期 + 类别 + 状态** 5 个筛选；已记录排前；待核实卡片右上角橙色徽章 |
 | `/#/community` | 植物社区 | 社区广场 / 分布点讨论；发帖支持最多 3 张照片与纯图片帖；大图预览（Esc 关闭）；数据写入科大云盘 |
 | `/#/species/:id` | 物种详情 | 科/属/习性/花期/果期/标签/描述 + **别名 / 识别特征 / 学名来源（图鉴分区）** + 分布点列表 + 迷你地图；**无点位时显示"尚未在校园内定位"提示**；底部标注参考书目 |
-| `/#/upload` | 上传投稿 | 选照片（自动压到宽 ≤900px JPEG）→ 选物种 → **地图点选位置或框选地块范围** → 保存；右侧"我的投稿"；导出/导入 JSON |
+| `/#/identify` | 拍照识树 | 拍照 / 选图 → 本地 ONNX 模型识别（Top-5 候选 + 置信度）→ 可带照片与物种跳到投稿页；模型首次下载约 43 MB，存 IndexedDB，之后离线可用 |
+| `/#/upload` | 上传投稿 | 选照片（自动压到宽 ≤900px JPEG，可选本地识别回填物种）→ 选物种 → **地图点选位置或框选地块范围** → 保存；右侧"我的投稿"；导出/导入 JSON |
 | `/#/batch` | 批量导入 | ①粘贴表格/上传 CSV（可下载模板）②批量选照片（按文件名匹配）③预览状态（可导入/有误/未匹配）→ 一键导入 |
 | `/#/about` | 关于 | 项目说明与使用指南 |
 | 其他 | — | 重定向到 `/` |
@@ -279,6 +289,7 @@ pnpm test                # Vitest 单元测试
 20. **投稿支持块状分布**：上传投稿页新增「单点位置 / 地块范围」切换，地块模式复用迷你地图做矩形/多边形框选并支持顶点微调；投稿记录新增 `polygon`（`[[lng,lat],...]`，GCJ-02）与 `areaSize`，`lat/lng` 存地块中心；分布地图把块状投稿绘制为橙色虚线面 + 名称标签，点击查看面积与照片；`storage.js` 与 `server/store.js` 均保留/校验地块字段，导出导入 JSON 兼容
 21. **移动端适配**：≤640px 顶栏导航改 4 列网格、全局输入字号 16px（避免 iOS 聚焦放大）、页面边距与标题缩放；地图筛选工具栏改 2 列网格、地图高度 58vh、框选完成后自动滚动到结果面板、文字按钮与边界圆点扩大触控热区；投稿页模式切换满宽、迷你地图高度用 `clamp()` 自适应；物种库/季节专题窄屏改为逐行 2 列网格，避免瀑布流「先滚完一列」；社区/批量导入/物种详情复核无横向溢出
 22. **触摸框选修复**：矩形框选改为 `pointerdown` 在容器捕获 + `pointermove/up/cancel` 拖拽期间挂到 `window`（避免手指移出地图/指针捕获失败导致中断）；按 `pointerId`/`isPrimary` 过滤多指，第二根手指不会覆盖起点；绘制时 `touch-action:none`、禁用 `touchZoom`、屏蔽长按菜单；`pointerup` 以抬起点重算矩形，快速滑动不会停在最后一次 move；高频 move 用 rAF 合并；系统 `pointercancel` 时放弃本次框选；无 PointerEvent 的极旧浏览器自动退化为多边形点击
+23. **拍照识别**：新增「拍照识树」页（`/#/identify`）并在投稿页嵌入识别入口；使用 iNaturalist 2021 微调的 ResNet50（int8 ONNX，43 MB）在浏览器内推理，`scripts/copy-ort.mjs` 负责复制 onnxruntime-web 的 wasm；模型按需下载并存 IndexedDB，图片不上传；`identify.js` 把模型类别按拉丁名/属名异名映射回 229 种物种库，Top-5 候选可一键回填物种或带图跳转投稿。实测 229 种中 73 种可对上中文名，香樟 93%、广玉兰 68% 可正确识别，紫薇/棕榈等同科近缘种会混淆
 
 ---
 
@@ -294,6 +305,8 @@ pnpm test                # Vitest 单元测试
 | 6 | 无登录与后台审核 | 当前为匿名发帖 + 单一口令保护；正式系统需另加账号、角色与审核流 |
 | 7 | 天地图需自行申请 Key | 无 Key 时仅高德标准底图；Key 需实名、有每日配额，且不要提交到 Git |
 | 8 | 天地图影像无更高层级 | 实测 19/20 级返回 4.7 KB 空白占位图；更高精度需自备高清图或付费服务 |
+| 9 | **本地识别模型能力有限** | iNat21 ResNet50 int8 仅 4271 种植物，229 种物种库中 73 种能对上中文名（银杏/桂花/水杉/棕榈等不在类别内）；同科近缘种易混淆（紫薇→夹竹桃、棕榈→箬棕），高置信度也会错。首次使用需下载 43 MB 模型，Git 仓库中已提交该文件 |
+| 10 | 识别为主线程推理 | 单张 0.3–2 秒，期间页面短暂无响应；未做 Web Worker / WebGPU 加速 |
 
 **分工经验**：4 人实地调查 →群里发照片+物种+位置（统一格式）→ 1 人用「批量导入」统一录入，效率最高。位置建议发**地标描述**（录入人在图上点选）或**经纬度文本**；微信发图会丢 EXIF，位置必须单独给。
 

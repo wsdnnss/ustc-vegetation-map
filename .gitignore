@@ -34,3 +34,6 @@ submissions-merged-*.json
 
 # 演示数据备份
 backups/
+
+# 由 scripts/copy-ort.mjs 从 node_modules 复制的 wasm 运行时
+public/ort/

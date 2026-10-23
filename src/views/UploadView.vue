@@ -25,13 +25,15 @@
               </svg>
             </span>
             <span>点击选择图片</span>
-            <small>支持 JPG / PNG，会自动压缩</small>
+            <small>支持 JPG / PNG，手机上可直接拍照，会自动压缩</small>
           </div>
           <input type="file" accept="image/*" @change="onFile" />
         </div>
         <button v-if="form.image" type="button" class="btn btn-ghost" @click="form.image = ''">
           移除图片
         </button>
+
+        <PhotoIdentify v-if="form.image" :image="form.image" @select="applyIdentified" />
 
         <h3 class="sub-title"><span class="step-no">2</span>物种信息</h3>
         <div class="field">
@@ -182,7 +184,7 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { speciesList, getSpeciesById, campus } from '@/utils/species'
 import {
   addSubmission,
@@ -195,6 +197,7 @@ import { downloadJSON, fileToResizedDataURL, readJSONFile } from '@/utils/image'
 import { getDiskStatus, uploadPhoto } from '@/utils/diskStore'
 import { formatArea, ringAreaM2 } from '@/utils/plots'
 import AreaPicker from '@/components/AreaPicker.vue'
+import PhotoIdentify from '@/components/PhotoIdentify.vue'
 
 const disk = getDiskStatus()
 const diskMode = disk.available
@@ -222,6 +225,34 @@ const form = reactive({
 function isArea(item) {
   return Array.isArray(item?.polygon) && item.polygon.length >= 3
 }
+
+/** 采用拍照识别的结果，回填物种名称与物种库条目 */
+function applyIdentified(payload) {
+  if (payload.speciesId) form.speciesId = payload.speciesId
+  if (payload.name) form.name = payload.name
+  flash(`已采用识别结果：${payload.name}`)
+}
+
+/** 从「拍照识树」页带着照片与候选物种跳转过来时，自动回填 */
+onMounted(() => {
+  let pending = ''
+  try {
+    pending = sessionStorage.getItem('ustc-veg-identify') || ''
+    if (pending) sessionStorage.removeItem('ustc-veg-identify')
+  } catch (e) {
+    return
+  }
+  if (!pending) return
+  try {
+    const data = JSON.parse(pending)
+    if (data.image) form.image = data.image
+    if (data.speciesId) form.speciesId = data.speciesId
+    if (data.name) form.name = data.name
+    flash('已带入识别照片与候选物种，请确认后保存')
+  } catch (e) {
+    // 数据损坏时忽略，不影响手动投稿
+  }
+})
 
 function areaTextOf(item) {
   if (!isArea(item)) return ''

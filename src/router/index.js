@@ -33,6 +33,12 @@ const routes = [
     meta: { title: '物种详情' }
   },
   {
+    path: '/identify',
+    name: 'identify',
+    component: () => import('@/views/IdentifyView.vue'),
+    meta: { title: '拍照识树' }
+  },
+  {
     path: '/upload',
     name: 'upload',
     component: () => import('@/views/UploadView.vue'),

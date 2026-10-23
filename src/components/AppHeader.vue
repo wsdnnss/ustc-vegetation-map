@@ -54,6 +54,7 @@ const route = useRoute()
 const navs = [
   { to: '/', label: '分布地图' },
   { to: '/species', label: '物种库' },
+  { to: '/identify', label: '拍照识树' },
   { to: '/season', label: '季节专题' },
   { to: '/community', label: '社区' },
   { to: '/upload', label: '上传投稿' },

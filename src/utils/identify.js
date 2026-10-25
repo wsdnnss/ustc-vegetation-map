@@ -3,19 +3,29 @@
 /**
  * 识别结果与本地物种库的匹配逻辑（纯函数，便于单元测试）。
  *
- * 模型输出为 iNaturalist 2021 数据集的 10000 个类别，
- * 这里只使用其中的植物类别（约 4271 个），并把拉丁名映射回物种库。
+ * 模型输出为 iNaturalist 2021 的 10000 个类别，这里只保留物种库中的 229 种：
+ * - 模型有同名/同物异名类别 → 直接使用该类别概率；
+ * - 模型没有该物种，但有同属类别 → 用同属概率打折，作为「同属参考」；
+ * - 两者都没有 → 该物种不参与排序，也不会出现在结果里。
  */
 
-/**
- * 属名同物异名：键为模型使用的属名，值为物种库中可能对应的属名。
- * 例：物种库写 Cerasus serrulata，模型输出 Prunus serrulata。
- */
+/** 属名同物异名：键为模型使用的属名，值为物种库中可能对应的属名 */
 const GENUS_SYNONYMS = {
   prunus: ['cerasus', 'amygdalus'],
   magnolia: ['michelia'],
   styphnolobium: ['sophora']
 }
+
+/** 反向映射：物种库属名 → 模型属名 */
+const MODEL_GENUS_OF = {
+  cerasus: 'prunus',
+  amygdalus: 'prunus',
+  michelia: 'magnolia',
+  sophora: 'styphnolobium'
+}
+
+/** 同属参考的置信度折扣：避免把「同属某种」的概率当成该物种的概率 */
+export const GENUS_DISCOUNT = 0.3
 
 /** 把带命名人、变种、园艺品种的学名压成「属 种」两个词 */
 export function normalizeBinomial(name) {
@@ -49,7 +59,7 @@ export function buildLibraryIndex(list = speciesList) {
     }
   }
 
-  return { byBinom, bySynonym }
+  return { byBinom, bySynonym, species: list }
 }
 
 /**
@@ -66,64 +76,87 @@ export function matchLibrary(cls, index) {
   return null
 }
 
+/** 该物种用于同属近似的模型属名（自身属名，或同物异名后的属名） */
+function modelGenusOf(species) {
+  const genus = normalizeBinomial(species.nameLatin).split(' ')[0]
+  return MODEL_GENUS_OF[genus] || genus
+}
+
 /**
- * 从模型 logits 中取出概率最高的若干植物类别。
- * @param {Float32Array|number[]} logits 长度 10000 的原始输出
+ * 仅在物种库 229 种内排序候选。
+ *
+ * @param {Float32Array|number[]} logits 模型原始输出（长度 10000）
  * @param {Array<{i:number,g:string,s:string,f:string}>} classes 植物类别表
- * @param {number} topK
+ * @param {{byBinom:Map,bySynonym:Map,species:Array}} index 物种库索引
+ * @param {{topK?: number}} options
+ * @returns {Array<{speciesId:string,nameCn:string,latin:string,familyCn:string,habit:string,confidence:number,match:'name'|'synonym'|'genus'}>}
  */
-export function topPlantCandidates(logits, classes, topK = 5) {
+export function rankLibraryCandidates(logits, classes, index, { topK = 5 } = {}) {
   let max = -Infinity
   for (let i = 0; i < logits.length; i++) if (logits[i] > max) max = logits[i]
   if (!Number.isFinite(max)) return []
 
   let sum = 0
-  for (let i = 0; i < logits.length; i++) sum += Math.exp(logits[i] - max)
+  const exps = new Float32Array(logits.length)
+  for (let i = 0; i < logits.length; i++) {
+    exps[i] = Math.exp(logits[i] - max)
+    sum += exps[i]
+  }
   if (!(sum > 0)) return []
 
-  const picked = []
+  const direct = new Map() // speciesId → { score, match }
+  const genusMax = new Map() // 模型属名 → 最大概率
+
   for (const c of classes) {
     if (c.i < 0 || c.i >= logits.length) continue
-    const p = Math.exp(logits[c.i] - max) / sum
+    const p = exps[c.i] / sum
     if (!(p > 0)) continue
-    if (picked.length < topK) {
-      picked.push({ ...c, confidence: p })
-      picked.sort((a, b) => b.confidence - a.confidence)
-    } else if (p > picked[picked.length - 1].confidence) {
-      picked[picked.length - 1] = { ...c, confidence: p }
-      picked.sort((a, b) => b.confidence - a.confidence)
-    }
-  }
-  return picked
-}
 
-/**
- * 给候选补上拉丁名、物种库信息，并按物种去重。
- * 同一物种在模型里可能有多个类别（如不同亚种），只保留置信度最高的一个。
- */
-export function decorateCandidates(candidates, index) {
-  const byKey = new Map()
-
-  for (const c of candidates) {
-    const latin = `${c.g} ${c.s}`
     const hit = matchLibrary({ genus: c.g, species: c.s }, index)
-    const item = {
-      latin,
-      family: c.f,
-      confidence: c.confidence,
-      speciesId: hit?.species.id || '',
-      nameCn: hit?.species.nameCn || '',
-      familyCn: hit?.species.family || '',
-      habit: hit?.species.habit || '',
-      inLibrary: Boolean(hit),
-      matchedBy: hit?.matchedBy || ''
+    if (hit) {
+      const prev = direct.get(hit.species.id)
+      if (!prev || p > prev.score) direct.set(hit.species.id, { score: p, match: hit.matchedBy })
+      // 该类别已归属库内某个物种，不再拿它的概率去给同属其他物种做参考
+      continue
     }
-    const key = item.speciesId || latin.toLowerCase()
-    const prev = byKey.get(key)
-    if (!prev || item.confidence > prev.confidence) byKey.set(key, item)
+
+    const genus = c.g.toLowerCase()
+    const prevMax = genusMax.get(genus)
+    if (prevMax === undefined || p > prevMax) genusMax.set(genus, p)
   }
 
-  return [...byKey.values()].sort((a, b) => b.confidence - a.confidence)
+  const out = []
+  for (const s of index.species) {
+    const found = direct.get(s.id)
+    if (found && found.score > 0) {
+      out.push({
+        speciesId: s.id,
+        nameCn: s.nameCn,
+        latin: s.nameLatin,
+        familyCn: s.family,
+        habit: s.habit || '',
+        confidence: found.score,
+        match: found.match
+      })
+      continue
+    }
+
+    const genusProb = genusMax.get(modelGenusOf(s))
+    if (genusProb > 0) {
+      out.push({
+        speciesId: s.id,
+        nameCn: s.nameCn,
+        latin: s.nameLatin,
+        familyCn: s.family,
+        habit: s.habit || '',
+        confidence: genusProb * GENUS_DISCOUNT,
+        match: 'genus'
+      })
+    }
+  }
+
+  out.sort((a, b) => b.confidence - a.confidence)
+  return out.slice(0, topK)
 }
 
 /** 置信度分级文案，避免把模型概率说成确定结论 */
@@ -133,5 +166,5 @@ export function confidenceLabel(p) {
   return '仅供参考'
 }
 
-/** 最高植物类别概率过低时，提示可能不是植物或照片不够清晰 */
+/** 最高候选概率过低时，提示可能不是植物或照片不够清晰 */
 export const PLANT_CONFIDENCE_FLOOR = 0.08

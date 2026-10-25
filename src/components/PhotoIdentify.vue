@@ -40,7 +40,7 @@
         <div class="result-head">
           <h4>
             识别结果
-            <small>本地模型 · 4271 种植物</small>
+            <small>本地模型 · 仅物种库 229 种</small>
           </h4>
           <button type="button" class="again" @click="run">
             <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
@@ -73,8 +73,7 @@
                 <span class="chip" :class="`tone-${tone(top.confidence)}`">
                   {{ confidenceLabel(top.confidence) }}
                 </span>
-                <span v-if="!top.inLibrary" class="chip chip-plain">未收录</span>
-                <span v-else class="chip chip-plain">已收录</span>
+                <span v-if="top.match === 'genus'" class="chip chip-ref">同属参考</span>
               </p>
               <div class="hero-actions">
                 <router-link v-if="top.speciesId" :to="`/species/${top.speciesId}`" class="link">
@@ -117,9 +116,9 @@
                 </div>
                 <div class="cand-foot">
                   <span class="muted">
-                    {{ c.familyCn || c.family }}
+                    {{ c.familyCn }}
                     <template v-if="c.habit"> · {{ c.habit }}</template>
-                    <template v-if="!c.inLibrary"> · 未收录</template>
+                    <template v-if="c.match === 'genus'"> · 同属参考</template>
                   </span>
                   <span class="links">
                     <router-link v-if="c.speciesId" :to="`/species/${c.speciesId}`" class="link">
@@ -135,10 +134,12 @@
           </template>
         </template>
 
-        <p v-else class="warn">模型没有返回可用的植物类别，请换一张更清晰、主体更明确的照片。</p>
+        <p v-else class="warn">
+          物种库 229 种里没有匹配到候选（该照片可能是库外植物，或主体不够清晰）。可以换一张更近的照片，或在「上传投稿」里手动填写物种。
+        </p>
 
         <p class="disclaimer">
-          识别模型为 iNaturalist 2021（约 4271 种植物），同科近缘种容易混淆，请结合叶形、花果与现场情况确认。
+          结果只在物种库 229 种内排序：与模型类别同名或同属的物种才会入选，同属参考会按比例折减，不代表确定结论。
         </p>
       </div>
     </template>
@@ -173,7 +174,11 @@ const totalMb = computed(() => (totalBytes.value ? (totalBytes.value / 1048576).
 
 const top = computed(() => result.value?.candidates?.[0] || null)
 const rest = computed(() => result.value?.candidates?.slice(1) || [])
-const topBadge = computed(() => (result.value?.likelyPlant ? '最可能' : '最接近的候选'))
+const topBadge = computed(() => {
+  if (!top.value) return ''
+  if (top.value.match === 'genus') return '库内同属参考'
+  return result.value?.likelyPlant ? '最可能' : '最接近的候选'
+})
 
 function pct(v) {
   return `${(v * 100).toFixed(1)}%`
@@ -505,12 +510,12 @@ function choose(c) {
   color: var(--ink-soft);
 }
 
-.chip-plain {
+.chip-ref {
   margin-left: 2px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.75);
-  color: var(--ink-soft);
-  font-weight: 500;
+  border: 1px solid #efdfbd;
+  background: var(--amber-050);
+  color: var(--amber);
+  font-weight: 600;
 }
 
 .hero-actions {

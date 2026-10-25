@@ -2,11 +2,34 @@
 import {
   buildLibraryIndex,
   confidenceLabel,
-  decorateCandidates,
+  GENUS_DISCOUNT,
   matchLibrary,
   normalizeBinomial,
-  topPlantCandidates
+  rankLibraryCandidates
 } from '../src/utils/identify.js'
+
+/** 测试用的小型物种库，避免依赖完整数据 */
+const LIB = [
+  { id: 'a', nameCn: '香樟', nameLatin: 'Cinnamomum camphora', family: '樟科', habit: '常绿乔木' },
+  { id: 'b', nameCn: '广玉兰', nameLatin: 'Magnolia grandiflora', family: '木兰科', habit: '常绿乔木' },
+  { id: 'c', nameCn: '白玉兰', nameLatin: 'Magnolia denudata', family: '木兰科', habit: '落叶乔木' },
+  {
+    id: 'd',
+    nameCn: '日本晚樱',
+    nameLatin: 'Cerasus serrulata var. lannesiana',
+    family: '蔷薇科',
+    habit: '落叶乔木'
+  },
+  { id: 'e', nameCn: '银杏', nameLatin: 'Ginkgo biloba', family: '银杏科', habit: '落叶乔木' }
+]
+
+const CLASSES = [
+  { i: 0, g: 'Cinnamomum', s: 'camphora', f: 'Lauraceae' },
+  { i: 1, g: 'Magnolia', s: 'grandiflora', f: 'Magnoliaceae' },
+  { i: 2, g: 'Magnolia', s: 'virginiana', f: 'Magnoliaceae' },
+  { i: 3, g: 'Prunus', s: 'serrulata', f: 'Rosaceae' },
+  { i: 4, g: 'Quercus', s: 'robur', f: 'Fagaceae' }
+]
 
 describe('学名归一化', () => {
   it('压缩命名人、变种与园艺品种', () => {
@@ -23,7 +46,7 @@ describe('学名归一化', () => {
 })
 
 describe('模型类别与物种库匹配', () => {
-  const index = buildLibraryIndex()
+  const index = buildLibraryIndex(LIB)
 
   it('精确匹配拉丁名', () => {
     const hit = matchLibrary({ genus: 'Cinnamomum', species: 'camphora' }, index)
@@ -42,46 +65,45 @@ describe('模型类别与物种库匹配', () => {
   })
 })
 
-describe('候选提取', () => {
-  it('只返回概率最高的若干植物类别，且按置信度降序', () => {
-    const logits = new Float32Array([1, 5, 3, 0])
-    const classes = [
-      { i: 0, g: 'Cinnamomum', s: 'camphora', f: 'Lauraceae' },
-      { i: 1, g: 'Magnolia', s: 'grandiflora', f: 'Magnoliaceae' },
-      { i: 2, g: 'Lagerstroemia', s: 'indica', f: 'Lythraceae' },
-      { i: 3, g: 'Ginkgo', s: 'biloba', f: 'Ginkgoaceae' }
-    ]
-    const top = topPlantCandidates(logits, classes, 2)
-    expect(top).toHaveLength(2)
-    expect(top[0].s).toBe('grandiflora')
-    expect(top[1].s).toBe('indica')
-    expect(top[0].confidence).toBeGreaterThan(top[1].confidence)
-    expect(top[0].confidence).toBeLessThanOrEqual(1)
+describe('只在物种库内排序候选', () => {
+  const index = buildLibraryIndex(LIB)
+
+  it('直匹配优先，同属物种按库外同属类别折扣得到参考分', () => {
+    const logits = new Float32Array([5, 3, 1, 2, 0])
+    const out = rankLibraryCandidates(logits, CLASSES, index, { topK: 5 })
+
+    expect(out.map((x) => x.nameCn)).toEqual(['香樟', '广玉兰', '日本晚樱', '白玉兰'])
+    expect(out[0].match).toBe('name')
+    expect(out[2].match).toBe('synonym')
+    expect(out[3].match).toBe('genus')
+    // 白玉兰的参考分来自库外的 Magnolia virginiana，而不是广玉兰的概率
+    expect(out[3].confidence).toBeLessThan(out[1].confidence * GENUS_DISCOUNT)
   })
 
-  it('忽略越界类别', () => {
-    const top = topPlantCandidates(new Float32Array([2, 1]), [{ i: 9, g: 'A', s: 'b', f: 'C' }], 3)
-    expect(top).toEqual([])
+  it('不会返回物种库之外的植物', () => {
+    const logits = new Float32Array([5, 3, 1, 2, 0])
+    const out = rankLibraryCandidates(logits, CLASSES, index, { topK: 5 })
+    const ids = new Set(LIB.map((s) => s.id))
+    expect(out.every((x) => ids.has(x.speciesId))).toBe(true)
+    expect(out.some((x) => x.nameCn === '银杏')).toBe(false)
   })
-})
 
-describe('候选与物种库合并', () => {
-  const index = buildLibraryIndex()
-
-  it('补上中文名并按物种去重，保留较高置信度', () => {
-    const list = decorateCandidates(
+  it('模型类别全都对不上物种库时返回空', () => {
+    const logits = new Float32Array([2, 1])
+    const out = rankLibraryCandidates(
+      logits,
       [
-        { g: 'Ilex', s: 'cornuta', f: 'Aquifoliaceae', confidence: 0.2 },
-        { g: 'Ilex', s: 'cornuta', f: 'Aquifoliaceae', confidence: 0.35 },
-        { g: 'Quercus', s: 'robur', f: 'Fagaceae', confidence: 0.3 }
+        { i: 0, g: 'Quercus', s: 'robur', f: 'Fagaceae' },
+        { i: 1, g: 'Picea', s: 'abies', f: 'Pinaceae' }
       ],
       index
     )
-    expect(list).toHaveLength(2)
-    expect(list[0].nameCn).toBe('枸骨')
-    expect(list[0].confidence).toBeCloseTo(0.35, 6)
-    expect(list[0].inLibrary).toBe(true)
-    expect(list.find((x) => x.latin === 'Quercus robur')?.inLibrary).toBe(false)
+    expect(out).toEqual([])
+  })
+
+  it('遵循 topK 截断', () => {
+    const out = rankLibraryCandidates(new Float32Array([5, 3, 1, 2, 0]), CLASSES, index, { topK: 2 })
+    expect(out).toHaveLength(2)
   })
 })
 

@@ -1,4 +1,4 @@
-﻿import { buildLibraryIndex, decorateCandidates, topPlantCandidates, PLANT_CONFIDENCE_FLOOR } from './identify'
+﻿import { buildLibraryIndex, rankLibraryCandidates, PLANT_CONFIDENCE_FLOOR } from './identify'
 
 /**
  * 浏览器端本地植物识别：ONNX Runtime Web + iNaturalist 2021 模型。
@@ -208,8 +208,7 @@ export async function recognizeImage(source, { topK = 5 } = {}) {
   const logits = outputs.logits.data
 
   if (!libraryIndex) libraryIndex = buildLibraryIndex()
-  const raw = topPlantCandidates(logits, engine.classes, topK)
-  const candidates = decorateCandidates(raw, libraryIndex)
+  const candidates = rankLibraryCandidates(logits, engine.classes, libraryIndex, { topK })
   const topConfidence = candidates[0]?.confidence || 0
 
   return {

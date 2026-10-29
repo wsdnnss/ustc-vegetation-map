@@ -82,7 +82,7 @@
           :lat="form.lat"
           :lng="form.lng"
           :polygon="form.polygon"
-          height="clamp(220px, 38vh, 280px)"
+          height="clamp(300px, 46vh, 420px)"
           @change="onAreaChange"
         />
         <div v-if="form.mode === 'point'" class="coord-row">

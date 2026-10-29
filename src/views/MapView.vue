@@ -213,8 +213,10 @@
 
     <p class="hint muted">
       提示：<template v-if="tiandituEnabled"
-        >已接入天地图（CGCS2000 / WGS-84），切换底图时会自动换算点位坐标；</template
-      ><template v-else>天地图图层未启用，配置 VITE_TIANDITU_TK 后自动出现在图层控件中；</template>
+        >已接入天地图（CGCS2000 / WGS-84）与高德底图（标准 / 卫星），切换底图时会自动换算点位坐标；</template
+      ><template v-else
+        >天地图图层未启用（配置 VITE_TIANDITU_TK 后自动出现在图层控件中），右上角可切换高德标准地图 / 高德卫星图；</template
+      >
       在线瓦片原生最高 <b>18 级</b>，地图同样限制在 18 级，避免继续放大的拉伸模糊。
       放大到 <b>18 级</b>起显示物种名称。地图仅显示<b>已记录</b>（有分布点）的物种，其余为待核实的候选清单。
       相近点位会自动聚合为数字标记，点击即可放大展开；同一位置记录到多种植物时会合并为一个数字点，
@@ -1621,6 +1623,21 @@ onMounted(() => {
     }
   )
 
+  // 高德卫星图（GCJ-02，无需 key）：style=6 为影像，style=8 为透明路网注记，叠在一起使用
+  const amapSatellite = L.layerGroup([
+    L.tileLayer('https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}', {
+      subdomains: '1234',
+      maxZoom: MAP_MAX,
+      maxNativeZoom: NATIVE_MAX,
+      attribution: '© 高德地图 卫星影像'
+    }),
+    L.tileLayer('https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}', {
+      subdomains: '1234',
+      maxZoom: MAP_MAX,
+      maxNativeZoom: NATIVE_MAX
+    })
+  ])
+
   const baseLayers = {}
   if (tiandituEnabled) {
     baseLayers['天地图影像（含影像注记）'] = tdtImagery
@@ -1629,6 +1646,7 @@ onMounted(() => {
     wgs84Layers.add(tdtVector)
   }
   baseLayers['高德标准地图'] = gaodeStandard
+  baseLayers['高德卫星图（含路网注记）'] = amapSatellite
 
   const defaultBase = tiandituEnabled ? tdtImagery : gaodeStandard
   defaultBase.addTo(map)

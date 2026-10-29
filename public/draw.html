@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>校园植被区域绘制工具</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; height:100%; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+  #app { display:flex; height:100%; }
+  #map { flex:1; height:100%; background:#eee; }
+  #panel { width:350px; height:100%; overflow-y:auto; background:#fff; border-left:1px solid #ddd; padding:12px 14px; font-size:13px; }
+  h3 { margin:16px 0 8px; font-size:13px; color:#333; border-left:3px solid #7CB342; padding-left:6px; }
+  h3:first-child { margin-top:0; }
+  .row { margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+  .row label { width:44px; color:#666; flex:none; }
+  input[type=text], select { flex:1; padding:5px 6px; border:1px solid #ccc; border-radius:4px; font-size:13px; }
+  button { padding:6px 10px; border:1px solid #bbb; background:#f7f7f7; border-radius:4px; cursor:pointer; font-size:13px; color:#333; }
+  button:hover { background:#eee; }
+  button.primary { background:#7CB342; color:#fff; border-color:#689f38; }
+  button.primary:hover { background:#689f38; }
+  button.warn { color:#c62828; }
+  .btnbar { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+  .stat { background:#f5f5f5; padding:8px 10px; border-radius:4px; line-height:1.9; }
+  .stat b { color:#2e7d32; }
+  textarea { width:100%; height:110px; font-family:Consolas,monospace; font-size:11px; border:1px solid #ccc; border-radius:4px; padding:6px; }
+  .hint { color:#888; font-size:12px; line-height:1.6; margin:6px 0; }
+  #msg { position:fixed; left:50%; top:16px; transform:translateX(-50%); background:rgba(0,0,0,.78); color:#fff; padding:8px 16px; border-radius:4px; display:none; z-index:9998; font-size:13px; }
+  #setup { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; z-index:9999; }
+  #setup .box { background:#fff; padding:24px 26px; border-radius:8px; width:430px; }
+  #setup h2 { margin:0 0 6px; font-size:17px; }
+  #setup label { display:block; color:#666; font-size:12px; margin:10px 0 3px; }
+  #setup input { width:100%; padding:7px; border:1px solid #ccc; border-radius:4px; font-size:13px; }
+  .plotitem { padding:5px 0; border-bottom:1px dashed #eee; display:flex; justify-content:space-between; align-items:center; gap:6px; }
+  .plotitem.off span { opacity:.45; }
+  .plotitem.sel { background:#FFF3E0; border-left:3px solid #FF6D00; padding-left:6px; margin-left:-3px; }
+  .plotitem.sel span b { color:#E65100; }
+  .plotitem .plotinfo { flex:1; cursor:pointer; }
+  .plotitem .plotinfo:hover b { text-decoration:underline; }
+  .plotitem .ops { display:flex; gap:4px; flex:none; }
+  .plotitem .ops button { padding:1px 6px; }
+  .plotitem .ops button:disabled { opacity:.4; cursor:default; }
+  .small { color:#999; font-size:12px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="map"></div>
+
+  <div id="panel">
+    <h3>1. 定位</h3>
+    <div class="row">
+      <input type="text" id="searchInput" placeholder="输入地点，如：中国科学技术大学">
+      <button onclick="searchPlace()">定位</button>
+    </div>
+    <div class="btnbar">
+      <button onclick="backToCampus()">回到校园中心</button>
+      <button id="btnSat" onclick="toggleSat()">切到卫星图</button>
+    </div>
+
+    <h3>2. 地块信息</h3>
+    <div class="row"><label>编号</label><input type="text" id="plotId" value="Z-01"></div>
+    <div class="row"><label>名称</label><input type="text" id="plotName" placeholder="如：樱花大道"></div>
+    <div class="row"><label>类型</label>
+      <select id="plotLanduse">
+        <option value="密林">密林</option>
+        <option value="疏林">疏林</option>
+        <option value="草坪" selected>草坪</option>
+        <option value="花坛">花坛</option>
+        <option value="行道树">行道树</option>
+      </select>
+    </div>
+    <div class="row"><label>颜色</label>
+      <select id="plotColor">
+        <option value="#2E7D32">深绿</option>
+        <option value="#7CB342" selected>中绿</option>
+        <option value="#AED581">浅绿</option>
+        <option value="#F9A825">橙黄</option>
+        <option value="#00897B">青绿</option>
+      </select>
+    </div>
+
+    <h3>3. 绘制</h3>
+    <div class="btnbar">
+      <button id="btnDraw" class="primary" onclick="toggleDraw()">开始绘制</button>
+      <button onclick="undoPoint()">撤销上一个点</button>
+      <button onclick="clearDrawing()">清空当前</button>
+    </div>
+    <div class="stat">
+      顶点数：<b id="statPoints">0</b><br>
+      当前面积：<b id="statArea">—</b>
+    </div>
+    <div class="btnbar" style="margin-top:8px">
+      <button class="primary" onclick="finishPlot()">完成本区域</button>
+      <button id="btnHideAll" onclick="toggleHideAll()">隐藏全部地块</button>
+      <button id="btnLabels" onclick="toggleLabels()">隐藏注释文字</button>
+    </div>
+    <p class="hint">用法：点【开始绘制】→ 沿边界依次点地图 → 点【完成本区域】。太稀就多点点，太密就撤销。</p>
+    <p class="hint">已画的地块挡住了底图？点【隐藏全部地块】把它们收起来，底图就露出来了，绘制照样能用；也可以在第 4 节逐个显示／隐藏。</p>
+    <p class="hint">地块名称标签挤在一起看不清？点【隐藏注释文字】只收起文字，地块边界仍然保留，方便边看卫星图边描边。</p>
+
+    <h3>4. 已画地块（<span id="plotCount">0</span>）</h3>
+    <p class="hint" style="margin:0 0 6px">不知道某一块是哪个编号？<b>直接在地图上点它</b>，或点下面的名称，就能选中并高亮；选中行会标橙色。</p>
+    <div id="plotList" class="hint">还没有地块</div>
+
+    <h3>5. 导出 / 合并</h3>
+    <div class="btnbar">
+      <button onclick="copyAll()">复制全部 JSON</button>
+      <button onclick="downloadAll()">下载 plots.json</button>
+      <button onclick="document.getElementById('importFile').click()">导入合并</button>
+      <input type="file" id="importFile" accept=".json" style="display:none">
+    </div>
+    <textarea id="output" placeholder="画完地块后，这里会显示完整的 JSON"></textarea>
+    <p class="hint"><b>多人分工怎么用：</b>每人只画自己负责的区域 → 分别点【下载 plots.json】→ 由 B 收集后逐个点【导入合并】。编号重复的会被覆盖，不同的自动追加。</p>
+    <p class="hint">数据自动保存在本浏览器里，关掉再打开还在。<a href="javascript:void(0)" onclick="openSetup()">更换高德 Key</a></p>
+  </div>
+</div>
+
+<div id="msg"></div>
+
+<div id="setup">
+  <div class="box">
+    <h2>首次使用：填入高德 Key</h2>
+    <p class="hint">在高德开放平台创建应用（类型选「Web端(JS API)」），会拿到两个值，粘贴到下面。只保存在你自己的浏览器里，不会上传到任何地方。</p>
+    <label>Key</label>
+    <input type="text" id="inKey" placeholder="例如 a1b2c3d4e5f6...">
+    <label>安全密钥（securityJsCode）</label>
+    <input type="text" id="inSec" placeholder="例如 9f8e7d6c5b4a...">
+    <button class="primary" onclick="saveKey()" style="width:100%; padding:9px; margin-top:14px;">保存并加载地图</button>
+  </div>
+</div>
+
+<script>
+/* ================= 基础配置 ================= */
+(function(){
+'use strict';
+var CAMPUS = [117.270000, 31.840000];   // 中科大校园中心（GCJ-02，可自己微调）
+var K_KEY = 'plot_tool_key';
+var S_KEY = 'plot_tool_sec';
+var D_KEY = 'plot_tool_data';
+
+/* 页面上的 onclick="xxx()" 按钮需要能访问到下面的函数，
+   所以启动时把用到的函数挂到 window 上（见文件末尾）。 */
+
+var map = null;
+var satOn = false;
+var drawing = false;
+var curPoints = [];
+var curMarkers = [];
+var curLine = null;
+var plots = [];
+var plotOverlays = [];
+// 注释文字（地块名称标签）是否显示；只影响显示，不影响导出的数据
+var showLabels = true;
+// 隐藏状态：用 Map + 私有变量名，避免局部变量（如 hidden）意外覆盖全局对象
+var hidState = (typeof Map === 'function') ? new Map() : null;
+var hidFallback = {};
+
+function isHidden(id){
+  return hidState ? hidState.has(id) : !!hidFallback[id];
+}
+function setHidden(id, on){
+  if (hidState) {
+    if (on) { hidState.set(id, true); } else { hidState.delete(id); }
+  } else {
+    if (on) { hidFallback[id] = true; } else { delete hidFallback[id]; }
+  }
+}
+function hiddenCountOf(){
+  var n = 0;
+  plots.forEach(function(p){ if (isHidden(p.plotId)) { n++; } });
+  return n;
+}
+
+/* 单个地块的注释文字是否被单独收起（和上面的"全部注释文字"开关叠加生效） */
+var labelOffState = (typeof Map === 'function') ? new Map() : null;
+var labelOffFallback = {};
+
+function isLabelOff(id){
+  return labelOffState ? labelOffState.has(id) : !!labelOffFallback[id];
+}
+function setLabelOff(id, on){
+  if (labelOffState) {
+    if (on) { labelOffState.set(id, true); } else { labelOffState.delete(id); }
+  } else {
+    if (on) { labelOffFallback[id] = true; } else { delete labelOffFallback[id]; }
+  }
+}
+
+/* ================= 选中地块 ================= */
+var selectedId = null;
+
+function selectPlot(id){
+  if (selectedId === id) { selectedId = null; } else { selectedId = id; }
+  // 选中的地块如果之前被隐藏了，自动把它显示出来，否则地图上看不到任何反馈
+  var autoShown = false;
+  if (selectedId && isHidden(id)) { setHidden(id, false); autoShown = true; }
+  redrawAll();
+  refreshAll();
+  if (selectedId) {
+    var p = plotById(id);
+    if (p) { toast((autoShown ? '已选中并显示 ' : '已选中 ') + p.plotId + ' ' + p.name); }
+  }
+}
+
+function plotById(id){
+  for (var i = 0; i < plots.length; i++) {
+    if (plots[i].plotId === id) { return plots[i]; }
+  }
+  return null;
+}
+
+/* 点击列表某一行 → 选中它；再点一次取消选中。
+   选中时把地图视野移到这块地上，方便确认"到底是哪一块"。 */
+function focusPlot(id){
+  selectPlot(id);
+  if (selectedId !== id || !map) { return; }
+  var poly = null;
+  for (var i = 0; i < plotOverlays.length; i++) {
+    if (plotOverlays[i].__plotId === id) { poly = plotOverlays[i]; break; }
+  }
+  if (!poly) { return; }
+  try {
+    if (typeof map.setFitView === 'function') { map.setFitView([ poly ], false, [80, 80, 80, 80]); }
+  } catch (e) {
+    try {
+      var p = plotById(id);
+      if (p && map.setZoomAndCenter) { map.setZoomAndCenter(18, p.center); }
+    } catch (e2) {}
+  }
+}
+
+function $(id){ return document.getElementById(id); }
+
+/* 本地存储的安全封装：某些打开方式下 localStorage 会被浏览器拒绝 */
+function storeGet(k){ try { return localStorage.getItem(k); } catch (e) { return null; } }
+function storeSet(k, v){ try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
+
+function toast(text){
+  var el = $('msg');
+  el.textContent = text;
+  el.style.display = 'block';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(function(){ el.style.display = 'none'; }, 2400);
+}
+
+/* ================= 启动 ================= */
+(function boot(){
+  try {
+    var saved = JSON.parse(storeGet(D_KEY) || '[]');
+    plots = Array.isArray(saved) ? saved : [];
+  } catch (e) { plots = []; }
+
+  var k = storeGet(K_KEY);
+  var s = storeGet(S_KEY);
+  if (k && s) {
+    loadAMap(k, s);
+  } else {
+    openSetup();
+  }
+  refreshAll();
+})();
+
+/* ================= 高德地图加载 ================= */
+function openSetup(){
+  $('inKey').value = storeGet(K_KEY) || '';
+  $('inSec').value = storeGet(S_KEY) || '';
+  $('setup').style.display = 'flex';
+}
+
+function saveKey(){
+  var k = $('inKey').value.trim();
+  var s = $('inSec').value.trim();
+  if (!k) { toast('请先填写 Key'); return; }
+  storeSet(K_KEY, k);
+  storeSet(S_KEY, s);
+  $('setup').style.display = 'none';
+  if (window.AMap) { initMap(); }
+  else { loadAMap(k, s); }
+}
+
+function loadAMap(key, sec){
+  window._AMapSecurityConfig = { securityJsCode: sec };
+  if (window.AMap) { initMap(); return; }
+  var sc = document.createElement('script');
+  sc.src = 'https://webapi.amap.com/maps?v=2.0&key=' + encodeURIComponent(key);
+  sc.onload = function(){ initMap(); };
+  sc.onerror = function(){ toast('地图脚本加载失败：请检查网络，或 Key 是否填对'); };
+  document.body.appendChild(sc);
+}
+
+function initMap(){
+  if (map) { return; }
+  map = new AMap.Map('map', {
+    center: CAMPUS,
+    zoom: 17,
+    viewMode: '2D',
+    mapStyle: 'amap://styles/whitesmoke'
+  });
+  map.on('click', onMapClick);
+  redrawAll();
+  refreshAll();
+}
+
+/* ================= 定位与图层 ================= */
+function backToCampus(){
+  if (!map) { toast('地图还没加载好'); return; }
+  map.setZoomAndCenter(17, CAMPUS);
+}
+
+function searchPlace(){
+  if (!map) { toast('地图还没加载好'); return; }
+  var kw = $('searchInput').value.trim();
+  if (!kw) { toast('请输入要查找的地点'); return; }
+  try {
+    var ps = new AMap.PlaceSearch({ pageSize: 1, city: '合肥', citylimit: false });
+    ps.search(kw, function(status, result){
+      if (status === 'complete' && result.poiList && result.poiList.pois && result.poiList.pois.length) {
+        var poi = result.poiList.pois[0];
+        map.setZoomAndCenter(18, [poi.location.lng, poi.location.lat]);
+        toast('已定位：' + poi.name);
+      } else {
+        toast('没找到，换个更完整的名称试试');
+      }
+    });
+  } catch (e) { toast('搜索失败，请直接拖动地图'); }
+}
+
+function toggleSat(){
+  if (!map) { toast('地图还没加载好'); return; }
+  satOn = !satOn;
+  if (satOn) {
+    map.setLayers([ new AMap.TileLayer.Satellite() ]);
+    $('btnSat').textContent = '切到矢量图';
+  } else {
+    map.setLayers([ new AMap.TileLayer() ]);
+    try { map.setMapStyle('amap://styles/whitesmoke'); } catch (e) {}
+    $('btnSat').textContent = '切到卫星图';
+  }
+}
+
+/* ================= 显示 / 隐藏已画地块 ================= */
+
+function togglePlot(id){
+  setHidden(id, !isHidden(id));
+  redrawAll();
+  refreshAll();
+}
+
+function toggleLabels(){
+  showLabels = !showLabels;
+  redrawAll();
+  refreshAll();
+  toast(showLabels ? '已显示注释文字' : '已隐藏注释文字（地块边界仍然保留）');
+}
+
+/* 只收起某一块的注释文字，其他地块不受影响 */
+function togglePlotLabel(id){
+  setLabelOff(id, !isLabelOff(id));
+  redrawAll();
+  refreshAll();
+  var p = plotById(id);
+  if (p) {
+    toast(isLabelOff(id) ? ('已收起注释：' + p.plotId) : ('已显示注释：' + p.plotId));
+  }
+}
+
+function toggleHideAll(){
+  if (!plots.length) { toast('还没有已画地块'); return; }
+  // 只要还有可见的就全部隐藏；全都隐藏了就全部显示
+  var anyVisible = plots.some(function(p){ return !isHidden(p.plotId); });
+  plots.forEach(function(p){ setHidden(p.plotId, anyVisible); });
+  redrawAll();
+  refreshAll();
+  toast(anyVisible ? '已隐藏全部地块，底图露出来了，可以继续画' : '已显示全部地块');
+}
+
+/* ================= 绘制 ================= */
+function toggleDraw(){
+  if (!map) { toast('地图还没加载好'); return; }
+  drawing = !drawing;
+  if (drawing) {
+    $('btnDraw').textContent = '结束绘制';
+    $('btnDraw').style.background = '#c62828';
+    $('btnDraw').style.borderColor = '#b71c1c';
+    toast('绘制中：在地图上沿边界依次点击（已画地块已变淡）');
+  } else {
+    $('btnDraw').textContent = '开始绘制';
+    $('btnDraw').style.background = '';
+    $('btnDraw').style.borderColor = '';
+  }
+  redrawAll();
+}
+
+function onMapClick(e){
+  if (!drawing) { return; }
+  var lng = Number(e.lnglat.getLng().toFixed(6));
+  var lat = Number(e.lnglat.getLat().toFixed(6));
+  if (curPoints.length) {
+    var last = curPoints[curPoints.length - 1];
+    if (Math.abs(last[0] - lng) < 0.000001 && Math.abs(last[1] - lat) < 0.000001) { return; }
+  }
+  curPoints.push([lng, lat]);
+  addVertex(lng, lat);
+  updatePreview();
+}
+
+function addVertex(lng, lat){
+  var m = new AMap.CircleMarker({
+    center: [lng, lat],
+    radius: 5,
+    strokeColor: '#ffffff',
+    strokeWeight: 2,
+    fillColor: '#2e7d32',
+    fillOpacity: 1,
+    zIndex: 200,
+    bubble: true
+  });
+  map.add(m);
+  curMarkers.push(m);
+}
+
+function updatePreview(){
+  if (curLine) { map.remove(curLine); curLine = null; }
+  if (curPoints.length >= 2) {
+    curLine = new AMap.Polyline({
+      path: curPoints,
+      strokeColor: '#2e7d32',
+      strokeWeight: 2,
+      strokeStyle: 'dashed',
+      zIndex: 150,
+      bubble: true
+    });
+    map.add(curLine);
+  }
+  refreshAll();
+}
+
+function undoPoint(){
+  if (!curPoints.length) { toast('还没有点'); return; }
+  curPoints.pop();
+  var m = curMarkers.pop();
+  if (m && map) { map.remove(m); }
+  updatePreview();
+}
+
+function clearDrawing(){
+  if (map) {
+    curMarkers.forEach(function(m){ map.remove(m); });
+    if (curLine) { map.remove(curLine); }
+  }
+  curMarkers = [];
+  curLine = null;
+  curPoints = [];
+  refreshAll();
+}
+
+function finishPlot(){
+  if (curPoints.length < 3) { toast('至少需要 3 个顶点才能围成一块地'); return; }
+  var id = $('plotId').value.trim();
+  var name = $('plotName').value.trim();
+  if (!id) { toast('请填写地块编号，如 Z-01'); return; }
+  if (!name) { toast('请填写地块名称，如 樱花大道'); return; }
+  if (plots.some(function(p){ return p.plotId === id; })) {
+    toast('编号 ' + id + ' 已存在，请换一个编号'); return;
+  }
+
+  var area = Math.round(ringArea(curPoints));
+  var plot = {
+    plotId: id,
+    name: name,
+    landuse: $('plotLanduse').value,
+    color: $('plotColor').value,
+    polygon: curPoints.map(function(p){ return [p[0], p[1]]; }),
+    center: centroid(curPoints),
+    dominantSpecies: [],
+    areaSize: area
+  };
+  plots.push(plot);
+  savePlots();
+  clearDrawing();
+  redrawAll();
+  $('plotName').value = '';
+  $('plotId').value = 'Z-' + String(plots.length + 1).padStart(2, '0');
+  toast('已保存：' + plot.name + '（' + formatArea(area) + '）');
+}
+
+/* ================= 几何计算 ================= */
+function ringArea(path){
+  if (path.length < 3) { return 0; }
+  try {
+    if (window.AMap && AMap.GeometryUtil && typeof AMap.GeometryUtil.ringArea === 'function') {
+      var ring = path.map(function(p){ return new AMap.LngLat(p[0], p[1]); });
+      var a = AMap.GeometryUtil.ringArea(ring);
+      if (a && isFinite(a) && a > 0) { return a; }
+    }
+  } catch (e) {}
+  // 备用算法：球面多边形面积近似（校园尺度误差 <1%）
+  var R = 6378137, rad = Math.PI / 180, sum = 0;
+  for (var i = 0; i < path.length; i++) {
+    var p1 = path[i];
+    var p2 = path[(i + 1) % path.length];
+    sum += (p2[0] - p1[0]) * rad * (2 + Math.sin(p1[1] * rad) + Math.sin(p2[1] * rad));
+  }
+  return Math.abs(sum * R * R / 2);
+}
+
+function centroid(path){
+  var x = 0, y = 0;
+  path.forEach(function(p){ x += p[0]; y += p[1]; });
+  return [ Number((x / path.length).toFixed(6)), Number((y / path.length).toFixed(6)) ];
+}
+
+function formatArea(m2){
+  if (!m2 || !isFinite(m2)) { return '—'; }
+  return m2 >= 10000 ? (m2 / 10000).toFixed(2) + ' 万㎡' : Math.round(m2) + ' ㎡';
+}
+
+/* ================= 图层渲染 ================= */
+function redrawAll(){
+  if (!map) { return; }
+  plotOverlays.forEach(function(o){ map.remove(o); });
+  plotOverlays = [];
+  plots.forEach(function(p){ drawPlot(p); });
+}
+
+function drawPlot(p){
+  if (isHidden(p.plotId)) { return; }   // 已隐藏的地块整块不画
+
+  var isSel = (selectedId === p.plotId);
+
+  // 绘制模式下把填充变淡，底图看得清，但边界线还在，方便对齐、防重叠
+  var fillOpacity = drawing ? 0.06 : 0.35;
+  var strokeOpacity = drawing ? 0.5 : 1;
+
+  // 选中：加深填充 + 加粗亮色描边，一眼能看出是哪一块
+  if (isSel) {
+    fillOpacity = drawing ? 0.18 : 0.6;
+    strokeOpacity = 1;
+  }
+
+  var poly = new AMap.Polygon({
+    path: p.polygon,
+    fillColor: p.color,
+    fillOpacity: fillOpacity,
+    strokeColor: isSel ? '#FF6D00' : p.color,
+    strokeWeight: isSel ? 4 : 2,
+    strokeOpacity: strokeOpacity,
+    zIndex: isSel ? 20 : 10,
+    bubble: true
+  });
+  poly.__plotId = p.plotId;   // 便于反查是哪一块
+  // 点地块本身 → 选中（绘制状态下不响应，免得和"连续点击画点"冲突）
+  try {
+    poly.on('click', function(){
+      if (drawing) { return; }
+      selectPlot(p.plotId);
+    });
+  } catch (e) {}
+  map.add(poly);
+  plotOverlays.push(poly);
+
+  // 注释文字：全局开关关掉、或这一块被单独收起时，都不画
+  if (!showLabels || isLabelOff(p.plotId)) { return; }
+
+  try {
+    var label = new AMap.Text({
+      text: p.name,
+      position: p.center,
+      zIndex: isSel ? 40 : 30,
+      bubble: true,
+      style: {
+        'background-color': isSel ? 'rgba(255,224,178,0.95)' : 'rgba(255,255,255,0.9)',
+        'border': '1px solid ' + (isSel ? '#FF6D00' : p.color),
+        'border-radius': '3px',
+        'color': isSel ? '#E65100' : '#33691e',
+        'font-size': '12px',
+        'font-weight': isSel ? 'bold' : 'normal',
+        'padding': '1px 5px',
+        'opacity': drawing ? '0.35' : '1'
+      }
+    });
+    map.add(label);
+    plotOverlays.push(label);
+  } catch (e) {}
+}
+
+/* ================= 数据读写 ================= */
+function savePlots(){
+  if (!storeSet(D_KEY, JSON.stringify(plots))) {
+    toast('本地保存失败，请及时点【下载 plots.json】保存');
+  }
+}
+
+function removePlot(id){
+  plots = plots.filter(function(p){ return p.plotId !== id; });
+  setHidden(id, false);
+  setLabelOff(id, false);
+  if (selectedId === id) { selectedId = null; }
+  savePlots();
+  redrawAll();
+  refreshAll();
+  toast('已删除 ' + id);
+}
+
+function refreshAll(){
+  $('plotCount').textContent = plots.length;
+  $('statPoints').textContent = curPoints.length;
+  $('statArea').textContent = curPoints.length >= 3 ? formatArea(ringArea(curPoints)) : '—';
+
+  // 选中的地块若已不存在，清掉选中状态
+  if (selectedId && !plotById(selectedId)) { selectedId = null; }
+
+  var box = $('plotList');
+  // 列表整体重建，避免旧行残留
+  while (box.firstChild) { box.removeChild(box.firstChild); }
+
+  if (!plots.length) {
+    box.className = 'hint';
+    box.innerHTML = '还没有地块';
+  } else {
+    box.className = '';
+    plots.forEach(function(p){
+      var off = isHidden(p.plotId);
+      var lblOff = isLabelOff(p.plotId);
+      var sel = (selectedId === p.plotId);
+
+      var row = document.createElement('div');
+      row.className = 'plotitem' + (off ? ' off' : '') + (sel ? ' sel' : '');
+      if (sel) { row.id = 'plotrow-' + p.plotId; }
+
+      var txt = document.createElement('span');
+      txt.className = 'plotinfo';
+      txt.innerHTML = '<b>' + p.plotId + '</b> ' + p.name +
+                      '<br><span class="small">' + p.landuse + ' · ' + formatArea(p.areaSize) +
+                      (off ? ' · 已隐藏' : '') +
+                      (!off && lblOff ? ' · 文字已收起' : '') + '</span>';
+      // 点这一行 → 选中并在图上定位
+      txt.onclick = function(){ focusPlot(p.plotId); };
+      txt.title = '点击选中，并在地图上定位到这块地';
+
+      var ops = document.createElement('div');
+      ops.className = 'ops';
+
+      var eye = document.createElement('button');
+      eye.textContent = off ? '显示' : '隐藏';
+      eye.title = '显示／隐藏整个地块';
+      eye.onclick = function(){ togglePlot(p.plotId); };
+
+      var lbl = document.createElement('button');
+      lbl.textContent = lblOff ? '显文字' : '隐文字';
+      lbl.title = '只显示／收起这一块的注释文字';
+      lbl.onclick = function(){ togglePlotLabel(p.plotId); };
+      if (off) { lbl.disabled = true; }
+
+      var btn = document.createElement('button');
+      btn.textContent = '删除';
+      btn.className = 'warn';
+      btn.onclick = function(){ removePlot(p.plotId); };
+
+      ops.appendChild(eye);
+      ops.appendChild(lbl);
+      ops.appendChild(btn);
+      row.appendChild(txt);
+      row.appendChild(ops);
+      box.appendChild(row);
+    });
+
+    // 选中后把该行滚进视野
+    if (selectedId) {
+      var selRow = $('plotrow-' + selectedId);
+      if (selRow && selRow.scrollIntoView) {
+        try { selRow.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+      }
+    }
+  }
+
+  // 顶部按钮的文字跟随当前状态：还有可见地块就提示“隐藏”，全隐藏了就提示“显示”
+  var btnHide = $('btnHideAll');
+  if (btnHide) {
+    btnHide.textContent = (plots.length && hiddenCountOf() >= plots.length) ? '显示全部地块' : '隐藏全部地块';
+  }
+
+  var btnLabels = $('btnLabels');
+  if (btnLabels) {
+    btnLabels.textContent = showLabels ? '隐藏注释文字' : '显示注释文字';
+  }
+
+  $('output').value = plots.length ? JSON.stringify(plots, null, 2) : '';
+}
+
+function copyAll(){
+  if (!plots.length) { toast('还没有地块可以导出'); return; }
+  var txt = JSON.stringify(plots, null, 2);
+  $('output').value = txt;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(function(){
+      toast('已复制到剪贴板');
+    }).catch(function(){
+      $('output').select();
+      toast('浏览器拦截了复制，已全选，请按 Ctrl+C');
+    });
+  } else {
+    $('output').select();
+    toast('已全选，请按 Ctrl+C');
+  }
+}
+
+function downloadAll(){
+  if (!plots.length) { toast('还没有地块可以导出'); return; }
+  var blob = new Blob([JSON.stringify(plots, null, 2)], { type: 'application/json' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'plots.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 3000);
+  toast('已下载 plots.json');
+}
+
+/* ================= 导入合并 ================= */
+$('importFile').addEventListener('change', function(ev){
+  var file = ev.target.files && ev.target.files[0];
+  if (!file) { return; }
+  var reader = new FileReader();
+  reader.onload = function(){
+    var data;
+    try { data = JSON.parse(reader.result); }
+    catch (e) { alert('这个文件不是合法的 JSON，请确认是从本工具下载的 plots.json'); return; }
+
+    if (!Array.isArray(data)) { data = [data]; }
+    var added = 0, replaced = 0, skipped = 0;
+    data.forEach(function(p){
+      if (!p || !p.plotId || !Array.isArray(p.polygon) || p.polygon.length < 3) { skipped++; return; }
+      var idx = -1;
+      for (var i = 0; i < plots.length; i++) {
+        if (plots[i].plotId === p.plotId) { idx = i; break; }
+      }
+      if (idx >= 0) { plots[idx] = p; replaced++; }
+      else { plots.push(p); added++; }
+    });
+    savePlots();
+    redrawAll();
+    refreshAll();
+    toast('导入完成：新增 ' + added + '，覆盖 ' + replaced + (skipped ? '，跳过 ' + skipped : ''));
+  };
+  reader.readAsText(file);
+  ev.target.value = '';
+});
+
+/* 把供页面按钮调用的函数挂到 window 上 */
+window.searchPlace = searchPlace;
+window.backToCampus = backToCampus;
+window.toggleSat = toggleSat;
+window.toggleDraw = toggleDraw;
+window.undoPoint = undoPoint;
+window.clearDrawing = clearDrawing;
+window.finishPlot = finishPlot;
+window.toggleHideAll = toggleHideAll;
+window.toggleLabels = toggleLabels;
+window.togglePlotLabel = togglePlotLabel;
+window.selectPlot = selectPlot;
+window.focusPlot = focusPlot;
+window.togglePlot = togglePlot;
+window.copyAll = copyAll;
+window.downloadAll = downloadAll;
+window.openSetup = openSetup;
+window.saveKey = saveKey;
+window.removePlot = removePlot;
+})();
+</script>
+</body>
+</html>
